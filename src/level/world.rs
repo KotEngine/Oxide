@@ -79,6 +79,16 @@ impl World {
         self.get_chunk_or_generate(chunk_x, chunk_z).get_block_id(cx, cy, cz)
     }
 
+    pub fn get_block_id_opt(&self, x: i32, y: i32, z: i32) -> u8 {
+        if y < 0 || y >= 256 { return 0; }
+        let chunk_x = x >> 4;
+        let chunk_z = z >> 4;
+        let cx = (x & 0x0f) as usize;
+        let cz = (z & 0x0f) as usize;
+        let cy = y as usize;
+        self.get_chunk(chunk_x, chunk_z).map(|c| c.get_block_id(cx, cy, cz)).unwrap_or(0)
+    }
+
     pub fn serialize_chunk(&mut self, x: i32, z: i32) -> Vec<u8> {
         let chunk = self.get_chunk_or_generate(x, z);
         chunk.network_serialize()

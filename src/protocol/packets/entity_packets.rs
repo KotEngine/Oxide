@@ -152,6 +152,10 @@ pub struct EntityEventPacket {
 }
 
 impl EntityEventPacket {
+    pub fn new(entity_runtime_id: i64, event: u8) -> Self {
+        Self { entity_runtime_id, event, data: 0 }
+    }
+
     pub const JUMP: u8 = 1;
     pub const HURT_ANIMATION: u8 = 2;
     pub const DEATH_ANIMATION: u8 = 3;

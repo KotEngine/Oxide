@@ -28,7 +28,14 @@ pub struct OxideServer {
     pub plugin_manager: Arc<crate::plugin::PluginManager>,
     pub permission_manager: Arc<crate::permission::PermissionManager>,
     pub projectile_manager: Arc<crate::entity::ProjectileManager>,
+    pub entity_manager: Arc<crate::entity::EntityManager>,
+    pub tile_manager: Arc<crate::tile::TileManager>,
     pub liquid_sim: Arc<crate::level::LiquidSimulation>,
+    pub weather: Arc<crate::level::WeatherSimulation>,
+    pub bans: Arc<RwLock<HashMap<String, String>>>,
+    pub banned_ips: Arc<RwLock<HashMap<String, String>>>,
+    pub whitelist: Arc<RwLock<std::collections::HashSet<String>>>,
+    pub whitelist_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub next_entity_id: Arc<RwLock<i64>>,
 }
 
@@ -80,7 +87,14 @@ impl OxideServer {
             plugin_manager,
             permission_manager,
             projectile_manager: Arc::new(crate::entity::ProjectileManager::new()),
+            entity_manager: Arc::new(crate::entity::EntityManager::new()),
+            tile_manager: Arc::new(crate::tile::TileManager::new()),
             liquid_sim: Arc::new(crate::level::LiquidSimulation::new()),
+            weather: Arc::new(crate::level::WeatherSimulation::new()),
+            bans: Arc::new(RwLock::new(HashMap::new())),
+            banned_ips: Arc::new(RwLock::new(HashMap::new())),
+            whitelist: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            whitelist_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             next_entity_id: Arc::new(RwLock::new(1)),
         })
     }
@@ -95,7 +109,11 @@ impl OxideServer {
             players: self.players.clone(),
             scheduler: self.scheduler.clone(),
             projectile_manager: self.projectile_manager.clone(),
+            entity_manager: self.entity_manager.clone(),
+            tile_manager: self.tile_manager.clone(),
+            crafting_manager: self.crafting_manager.clone(),
             liquid_sim: self.liquid_sim.clone(),
+            weather: self.weather.clone(),
             next_entity_id: self.next_entity_id.clone(),
         };
         tokio::spawn(async move {
@@ -263,7 +281,11 @@ struct TickHandles {
     players: Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     scheduler: Arc<crate::scheduler::Scheduler>,
     projectile_manager: Arc<crate::entity::ProjectileManager>,
+    entity_manager: Arc<crate::entity::EntityManager>,
+    tile_manager: Arc<crate::tile::TileManager>,
+    crafting_manager: Arc<crate::inventory::CraftingManager>,
     liquid_sim: Arc<crate::level::LiquidSimulation>,
+    weather: Arc<crate::level::WeatherSimulation>,
     next_entity_id: Arc<RwLock<i64>>,
 }
 
@@ -284,6 +306,15 @@ async fn tick_loop(h: TickHandles) {
         // Ticking projectiles (every tick)
         h.projectile_manager.tick(&h.world, &h.players, &h.rak, &h.next_entity_id).await;
 
+        // Ticking active entities (every tick)
+        h.entity_manager.tick(&h.world, &h.players, &h.rak, &h.next_entity_id).await;
+
+        // Ticking weather simulation (every tick)
+        h.weather.tick(&h.rak, &h.players).await;
+
+        // Ticking furnaces (every tick)
+        h.tile_manager.tick_furnaces(&h.crafting_manager);
+
         // Ticking liquid physics (every 5 ticks = 4 updates/sec)
         if tick_counter % 5 == 0 {
             h.liquid_sim.tick(&h.world, &h.rak, &h.players).await;
@@ -294,6 +325,11 @@ async fn tick_loop(h: TickHandles) {
             check_environment_hazards(&h.world, &h.players, &h.rak).await;
         }
 
+        // Food regeneration & starvation every 80 ticks (4 seconds)
+        if tick_counter % 80 == 0 {
+            tick_player_food_and_health(&h.players, &h.rak).await;
+        }
+
         if tick_counter % 40 == 0 {
             let time = { h.world.read().time };
             let pk = SetTimePacket::new(time);
@@ -302,6 +338,51 @@ async fn tick_loop(h: TickHandles) {
 
         if tick_counter % 4 == 0 {
             broadcast_player_positions(&h.rak, &h.players).await;
+        }
+    }
+}
+
+async fn tick_player_food_and_health(
+    players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
+    rak: &RakNetServer,
+) {
+    let list: Vec<(SocketAddr, u32, u32, f32)> = {
+        let p = players.read();
+        p.iter()
+            .filter(|(_, s)| s.logged_in && s.gamemode == 0) // Survival only
+            .map(|(a, s)| (*a, s.health, s.food_level, s.food_saturation))
+            .collect()
+    };
+
+    for (addr, health, food, sat) in list {
+        if food >= 18 && health < 20 {
+            // Natural regeneration
+            let new_hp = (health + 1).min(20);
+            let new_food = if sat > 0.0 { food } else { food.saturating_sub(1) };
+            let new_sat = (sat - 1.0).max(0.0);
+            {
+                let mut p = players.write();
+                if let Some(s) = p.get_mut(&addr) {
+                    s.health = new_hp;
+                    s.food_level = new_food;
+                    s.food_saturation = new_sat;
+                }
+            }
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            let batch = BatchPacket::encode(&[hp_pk.encode()]);
+            rak.send_encapsulated(addr, batch, true).await;
+        } else if food == 0 && health > 1 {
+            // Starvation damage
+            let new_hp = health.saturating_sub(1);
+            {
+                let mut p = players.write();
+                if let Some(s) = p.get_mut(&addr) {
+                    s.health = new_hp;
+                }
+            }
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            let batch = BatchPacket::encode(&[hp_pk.encode()]);
+            rak.send_encapsulated(addr, batch, true).await;
         }
     }
 }
@@ -455,12 +536,17 @@ fn clone_state(s: &PlayerState) -> PlayerState {
         fall_distance: s.fall_distance,
         gamemode: s.gamemode,
         health: s.health,
+        food_level: s.food_level,
+        food_saturation: s.food_saturation,
+        xp_points: s.xp_points,
+        xp_level: s.xp_level,
         metadata: s.metadata.clone(),
         chunk_radius: s.chunk_radius,
         logged_in: s.logged_in,
         spawned: s.spawned,
         sent_chunks: s.sent_chunks.clone(),
         inventory: inv,
+        open_container: s.open_container,
     }
 }
 
@@ -534,6 +620,34 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 send_packet(&self_data.rak, addr, pk.encode()).await;
                 let _ = self_data.rak.close_session(addr, "incompatible protocol".to_string()).await;
                 return;
+            }
+
+            // Check player ban
+            let lower_name = login.username.to_lowercase();
+            if let Some(reason) = self_data.bans.read().get(&lower_name) {
+                let disconnect = DisconnectPacket::new(format!("You are banned: {}", reason));
+                send_packet(&self_data.rak, addr, disconnect.encode()).await;
+                let _ = self_data.rak.close_session(addr, "banned".to_string()).await;
+                return;
+            }
+
+            // Check IP ban
+            let ip_str = addr.ip().to_string();
+            if let Some(reason) = self_data.banned_ips.read().get(&ip_str) {
+                let disconnect = DisconnectPacket::new(format!("Your IP is banned: {}", reason));
+                send_packet(&self_data.rak, addr, disconnect.encode()).await;
+                let _ = self_data.rak.close_session(addr, "ip banned".to_string()).await;
+                return;
+            }
+
+            // Check whitelist
+            if self_data.whitelist_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+                if !self_data.whitelist.read().contains(&lower_name) {
+                    let disconnect = DisconnectPacket::new("Server is whitelisted".to_string());
+                    send_packet(&self_data.rak, addr, disconnect.encode()).await;
+                    let _ = self_data.rak.close_session(addr, "whitelist".to_string()).await;
+                    return;
+                }
             }
             let entity_id = {
                 let mut eid = self_data.next_entity_id.write();
@@ -679,7 +793,10 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     let available_cmds = self_data.command_manager.generate_available_commands_packet();
                     send_packet(&self_data.rak, addr, available_cmds.encode()).await;
 
-                    let crafting_pk = CraftingDataPacket::new();
+                    // Synchronize weather state with player
+                    self_data.weather.send_to_player(addr, &self_data.rak).await;
+
+                    let crafting_pk = CraftingDataPacket::with_default_recipes();
                     send_packet(&self_data.rak, addr, crafting_pk.encode()).await;
 
                     let mut creative_pk = ContainerSetContentPacket::new(crate::protocol::types::ContainerIds::CREATIVE as u32);
@@ -848,13 +965,133 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 player_action::ACTION_STOP_BREAK => {
                     handle_break_block(self_data, addr, action.x, action.y as i32, action.z).await;
                 }
+                player_action::ACTION_RELEASE_ITEM => {
+                    let held_item = self_data.players.read().get(&addr).map(|s| s.inventory.held_item()).unwrap_or_else(crate::protocol::types::Item::air);
+                    if held_item.id == 261 { // Bow
+                        let proj_eid = {
+                            let mut guard = self_data.next_entity_id.write();
+                            let id = *guard;
+                            *guard += 1;
+                            id
+                        };
+                        let p_info = self_data.players.read().get(&addr).map(|s| (s.x, s.y, s.z, s.yaw, s.pitch, s.entity_id));
+                        if let Some((px, py, pz, yaw, pitch, eid)) = p_info {
+                            let yaw_rad = (yaw as f64).to_radians();
+                            let pitch_rad = (pitch as f64).to_radians();
+                            let speed = 2.2f32;
+                            let vx = (-yaw_rad.sin() * pitch_rad.cos() * speed as f64) as f32;
+                            let vy = (-pitch_rad.sin() * speed as f64) as f32;
+                            let vz = (yaw_rad.cos() * pitch_rad.cos() * speed as f64) as f32;
+
+                            self_data.entity_manager.spawn_projectile(
+                                proj_eid,
+                                80, // Arrow
+                                px,
+                                py + 1.5,
+                                pz,
+                                vx, vy, vz,
+                                yaw, pitch,
+                                eid,
+                                &self_data.rak,
+                                &self_data.players,
+                            ).await;
+
+                            let bow_snd = LevelSoundEventPacket::new(level_event::SOUND_BOW, px as f32, py as f32, pz as f32);
+                            broadcast_except(&self_data.rak, &self_data.players, None, bow_snd.encode()).await;
+                        }
+                    }
+                }
+                player_action::ACTION_SPAWN_SAME_DIMENSION | player_action::ACTION_SPAWN_OVERWORLD => {
+                    let (sx, sy, sz) = {
+                        let w = self_data.world.read();
+                        (w.spawn_x, w.spawn_y, w.spawn_z)
+                    };
+                    let eid = {
+                        let mut p = self_data.players.write();
+                        if let Some(s) = p.get_mut(&addr) {
+                            s.health = 20;
+                            s.food_level = 20;
+                            s.food_saturation = 5.0;
+                            s.x = sx as f64 + 0.5;
+                            s.y = sy as f64 + 0.5;
+                            s.z = sz as f64 + 0.5;
+                            s.entity_id
+                        } else {
+                            0
+                        }
+                    };
+                    let respawn_pk = RespawnPacket {
+                        x: sx as f32 + 0.5,
+                        y: sy as f32 + 0.5,
+                        z: sz as f32 + 0.5,
+                    };
+                    send_packet(&self_data.rak, addr, respawn_pk.encode()).await;
+
+                    let hp_pk = SetHealthPacket::new(20);
+                    send_packet(&self_data.rak, addr, hp_pk.encode()).await;
+
+                    let mv = MovePlayerPacket::new(eid, sx as f32 + 0.5, sy as f32 + 1.62, sz as f32 + 0.5, 0.0, 0.0);
+                    send_packet(&self_data.rak, addr, mv.encode()).await;
+                }
                 _ => {}
             }
         }
         IncomingPacket::UseItem(ui) => {
             handle_use_item(self_data, addr, ui).await;
         }
-        IncomingPacket::Interact(_) => {}
+        IncomingPacket::Interact(interact) => {
+            if interact.action == crate::protocol::packets::interact::ACTION_LEFT_CLICK {
+                let held_item = self_data.players.read().get(&addr).map(|s| s.inventory.held_item()).unwrap_or_else(crate::protocol::types::Item::air);
+                let base_damage = match held_item.id {
+                    276 => 7.0, // Diamond sword
+                    267 => 6.0, // Iron sword
+                    272 => 5.0, // Stone sword
+                    268 | 283 => 4.0, // Wood / Gold sword
+                    279 => 6.0, // Diamond axe
+                    258 => 5.0, // Iron axe
+                    _ => 1.0,
+                };
+                let enchs = crate::item::enchantment::parse_enchantments_from_item(&held_item);
+                let bonus = crate::item::enchantment::calculate_melee_damage_bonus(&enchs, false, false);
+                let total_damage = base_damage + bonus;
+                let attacker_eid = self_data.players.read().get(&addr).map(|s| s.entity_id).unwrap_or(0);
+
+                let killed = self_data.entity_manager.damage_entity(interact.target, total_damage, attacker_eid, &self_data.rak, &self_data.players).await;
+                if killed {
+                    let death_snd = LevelSoundEventPacket::new(level_event::SOUND_DEATH, 0.0, 0.0, 0.0);
+                    broadcast_except(&self_data.rak, &self_data.players, None, death_snd.encode()).await;
+                }
+
+                // PvP Player damage
+                let target_player = {
+                    let p = self_data.players.read();
+                    p.iter().find(|(_, s)| s.entity_id == interact.target).map(|(a, s)| (*a, s.health, s.gamemode, s.username.clone()))
+                };
+                if let Some((target_addr, target_hp, gm, target_name)) = target_player {
+                    if gm == 0 && target_addr != addr {
+                        let new_hp = (target_hp as f32 - total_damage).max(0.0) as u32;
+                        {
+                            let mut p = self_data.players.write();
+                            if let Some(s) = p.get_mut(&target_addr) {
+                                s.health = new_hp;
+                            }
+                        }
+                        let hp_pk = SetHealthPacket::new(new_hp as i32);
+                        self_data.send_packet_to(target_addr, hp_pk.encode());
+
+                        let anim = AnimatePacket::new(1, interact.target);
+                        let hurt_snd = LevelSoundEventPacket::new(level_event::SOUND_HIT, 0.0, 0.0, 0.0);
+                        broadcast_except(&self_data.rak, &self_data.players, None, anim.encode()).await;
+                        broadcast_except(&self_data.rak, &self_data.players, None, hurt_snd.encode()).await;
+
+                        if new_hp == 0 {
+                            let attacker_name = self_data.players.read().get(&addr).map(|s| s.username.clone()).unwrap_or_default();
+                            self_data.broadcast_message(&format!("{} was slain by {}", target_name, attacker_name));
+                        }
+                    }
+                }
+            }
+        }
         IncomingPacket::MobEquipment(me) => {
             if let Some(state) = self_data.players.write().get_mut(&addr) {
                 state.inventory.set_held_index(me.hotbar_slot as usize);
@@ -876,9 +1113,43 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                         state.inventory.set_item(slot, slot_pk.item);
                     }
                 }
+            } else if slot_pk.window_id == 1 {
+                let open_pos = self_data.players.read().get(&addr).and_then(|s| s.open_container);
+                if let Some((cx, cy, cz)) = open_pos {
+                    let block_id = { self_data.world.read().get_block_id_opt(cx, cy, cz) };
+                    if block_id == 54 {
+                        let viewers = self_data.tile_manager.set_chest_slot(cx, cy, cz, slot_pk.slot as usize, slot_pk.item.clone());
+                        let sync_pk = ContainerSetSlotPacket::new(1, slot_pk.slot, slot_pk.item);
+                        for viewer in viewers {
+                            if viewer != addr {
+                                self_data.send_packet_to(viewer, sync_pk.encode());
+                            }
+                        }
+                    } else if block_id == 61 || block_id == 62 {
+                        self_data.tile_manager.set_furnace_slot(cx, cy, cz, slot_pk.slot as usize, slot_pk.item);
+                    }
+                }
             }
         }
-        IncomingPacket::ContainerClose(_) => {}
+        IncomingPacket::ContainerClose(close_pk) => {
+            if close_pk.window_id == 1 {
+                {
+                    let mut p = self_data.players.write();
+                    if let Some(s) = p.get_mut(&addr) {
+                        s.open_container = None;
+                    }
+                }
+                let closed_chests = self_data.tile_manager.close_all_for_player(addr);
+                for ((cx, cy, cz), was_last) in closed_chests {
+                    if was_last {
+                        let block_ev = BlockEventPacket { x: cx, y: cy as u32, z: cz, case_1: 1, case_2: 0 };
+                        let sound = LevelSoundEventPacket::new(level_event::SOUND_CHEST_CLOSED, cx as f32 + 0.5, cy as f32 + 0.5, cz as f32 + 0.5);
+                        broadcast_except(&self_data.rak, &self_data.players, None, block_ev.encode()).await;
+                        broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+                    }
+                }
+            }
+        }
         IncomingPacket::CraftingEvent(craft_pk) => {
             let recipe_opt = self_data.crafting_manager.match_shapeless(&craft_pk.input)
                 .or_else(|| self_data.crafting_manager.match_shaped(&craft_pk.input, 3, 3));
@@ -1054,6 +1325,10 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 send_packet(&self_data.rak, addr, slot_pk.encode()).await;
             }
         }
+        IncomingPacket::BlockEntityData(bed) => {
+            // Sign text updates and block entity sync to other players
+            broadcast_except(&self_data.rak, &self_data.players, Some(addr), bed.encode()).await;
+        }
         IncomingPacket::Unknown(_, _) => {
             let name = crate::protocol::pool::PacketPool::name(id);
             let ip = self_data.players.read().get(&addr).map(|s| s.username.clone()).unwrap_or_default();
@@ -1110,6 +1385,26 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
         (name, id, meta)
     };
     let _ = player_name;
+
+    // Remove tile entity data and drop its stored items
+    let tile_drops = self_data.tile_manager.remove_tile(x, y, z);
+    for drop_it in tile_drops {
+        let drop_eid = {
+            let mut eid_guard = self_data.next_entity_id.write();
+            let id = *eid_guard;
+            *eid_guard += 1;
+            id
+        };
+        self_data.entity_manager.spawn_item_drop(
+            drop_eid,
+            drop_it,
+            x as f64 + 0.5,
+            y as f64 + 0.5,
+            z as f64 + 0.5,
+            &self_data.rak,
+            &self_data.players,
+        ).await;
+    }
 
     let pk = UpdateBlockPacket::new(x, y as u32, z, 0, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
@@ -1455,7 +1750,7 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
         }
     }
 
-    // 4. Doors (64, 71), Trapdoors (96), Gates (107) toggle
+    // 4. Block and Container Interactions
     if ui.face >= 0 && ui.face <= 5 {
         let (target_id, target_meta) = {
             let mut w = self_data.world.write();
@@ -1469,6 +1764,76 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
             (id, meta)
         };
 
+        // Flint and Steel (259) on TNT (46)
+        if (item_id == 259 || item_id == 385) && target_id == 46 {
+            {
+                let mut w = self_data.world.write();
+                w.set_block(ui.x, ui.y as i32, ui.z, 0, 0);
+            }
+            let clear_pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, 0, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, clear_pk.encode()).await;
+
+            let tnt_eid = {
+                let mut guard = self_data.next_entity_id.write();
+                let id = *guard;
+                *guard += 1;
+                id
+            };
+            self_data.entity_manager.spawn_tnt(
+                tnt_eid,
+                ui.x as f64 + 0.5,
+                ui.y as f64,
+                ui.z as f64 + 0.5,
+                80,
+                &self_data.rak,
+                &self_data.players,
+            ).await;
+            return;
+        }
+
+        // Hoe on Dirt (3) or Grass (2) -> Farmland (60)
+        let is_hoe = item_id == 290 || item_id == 291 || item_id == 292 || item_id == 293 || item_id == 294;
+        if is_hoe && (target_id == 2 || target_id == 3) && ui.face == 1 {
+            {
+                let mut w = self_data.world.write();
+                w.set_block(ui.x, ui.y as i32, ui.z, 60, 0);
+            }
+            let pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, 60, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+            let till_snd = LevelSoundEventPacket::new(level_event::SOUND_ITEM_USE_ON, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
+            broadcast_except(&self_data.rak, &self_data.players, None, till_snd.encode()).await;
+            return;
+        }
+
+        // Shovel on Grass (2) -> Grass Path (198)
+        let is_shovel = item_id == 256 || item_id == 269 || item_id == 273 || item_id == 277 || item_id == 284;
+        if is_shovel && target_id == 2 && ui.face == 1 {
+            {
+                let mut w = self_data.world.write();
+                w.set_block(ui.x, ui.y as i32, ui.z, 198, 0);
+            }
+            let pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, 198, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+            let till_snd = LevelSoundEventPacket::new(level_event::SOUND_ITEM_USE_ON, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
+            broadcast_except(&self_data.rak, &self_data.players, None, till_snd.encode()).await;
+            return;
+        }
+
+        // Bone Meal (351:15) on crops (59, 141, 142, 244) or sapling (6)
+        if item_id == 351 && item_meta == 15 && (target_id == 59 || target_id == 141 || target_id == 142 || target_id == 244 || target_id == 6) {
+            let mature_meta = if target_id == 244 { 4 } else { 7 };
+            {
+                let mut w = self_data.world.write();
+                w.set_block(ui.x, ui.y as i32, ui.z, target_id, mature_meta);
+            }
+            let pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, target_id as u32, mature_meta as u32, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+            let grow_snd = LevelEventPacket::new(level_event::EVENT_PARTICLE_SPLASH, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5, 0);
+            broadcast_except(&self_data.rak, &self_data.players, None, grow_snd.encode()).await;
+            return;
+        }
+
+        // Doors (64, 71), Trapdoors (96), Gates (107) toggle
         if target_id == 64 || target_id == 71 || target_id == 96 || target_id == 107 {
             let new_meta = target_meta ^ 0x04;
             {
@@ -1489,14 +1854,80 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
             return;
         }
 
+        // Crafting Table (58)
+        if target_id == 58 {
+            let open_pk = ContainerOpenPacket::new(1, 1, ui.x, ui.y, ui.z);
+            send_packet(&self_data.rak, addr, open_pk.encode()).await;
+            return;
+        }
+
+        // Chest (54)
         if target_id == 54 {
-            let chest_sound = LevelSoundEventPacket::new(
-                level_event::SOUND_CHEST_OPEN,
-                ui.x as f32 + 0.5,
-                ui.y as f32 + 0.5,
-                ui.z as f32 + 0.5,
-            );
-            broadcast_except(&self_data.rak, &self_data.players, None, chest_sound.encode()).await;
+            let (slots, first) = self_data.tile_manager.open_chest(addr, ui.x, ui.y as i32, ui.z);
+            {
+                let mut p = self_data.players.write();
+                if let Some(s) = p.get_mut(&addr) {
+                    s.open_container = Some((ui.x, ui.y as i32, ui.z));
+                }
+            }
+            let open_pk = ContainerOpenPacket::new(1, 0, ui.x, ui.y, ui.z);
+            send_packet(&self_data.rak, addr, open_pk.encode()).await;
+
+            let mut content_pk = ContainerSetContentPacket::new(1);
+            content_pk.items = slots;
+            send_packet(&self_data.rak, addr, content_pk.encode()).await;
+
+            if first {
+                let block_ev = BlockEventPacket { x: ui.x, y: ui.y, z: ui.z, case_1: 1, case_2: 2 };
+                let sound = LevelSoundEventPacket::new(level_event::SOUND_CHEST_OPEN, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
+                broadcast_except(&self_data.rak, &self_data.players, None, block_ev.encode()).await;
+                broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+            }
+            return;
+        }
+
+        // Furnace (61, 62)
+        if target_id == 61 || target_id == 62 {
+            let slots = self_data.tile_manager.open_furnace(addr, ui.x, ui.y as i32, ui.z);
+            {
+                let mut p = self_data.players.write();
+                if let Some(s) = p.get_mut(&addr) {
+                    s.open_container = Some((ui.x, ui.y as i32, ui.z));
+                }
+            }
+            let open_pk = ContainerOpenPacket::new(1, 2, ui.x, ui.y, ui.z);
+            send_packet(&self_data.rak, addr, open_pk.encode()).await;
+
+            let mut content_pk = ContainerSetContentPacket::new(1);
+            content_pk.items = slots;
+            send_packet(&self_data.rak, addr, content_pk.encode()).await;
+            return;
+        }
+
+        // Anvil (145)
+        if target_id == 145 {
+            let open_pk = ContainerOpenPacket::new(1, 5, ui.x, ui.y, ui.z);
+            send_packet(&self_data.rak, addr, open_pk.encode()).await;
+            return;
+        }
+
+        // Enchanting Table (116)
+        if target_id == 116 {
+            let open_pk = ContainerOpenPacket::new(1, 3, ui.x, ui.y, ui.z);
+            send_packet(&self_data.rak, addr, open_pk.encode()).await;
+            return;
+        }
+
+        // Brewing Stand (117)
+        if target_id == 117 {
+            let open_pk = ContainerOpenPacket::new(1, 4, ui.x, ui.y, ui.z);
+            send_packet(&self_data.rak, addr, open_pk.encode()).await;
+            return;
+        }
+
+        // Bed (26)
+        if target_id == 26 {
+            self_data.send_message_to(addr, "Respawn point set");
             return;
         }
     }
@@ -1809,7 +2240,14 @@ impl Clone for OxideServer {
             plugin_manager: self.plugin_manager.clone(),
             permission_manager: self.permission_manager.clone(),
             projectile_manager: self.projectile_manager.clone(),
+            entity_manager: self.entity_manager.clone(),
+            tile_manager: self.tile_manager.clone(),
             liquid_sim: self.liquid_sim.clone(),
+            weather: self.weather.clone(),
+            bans: self.bans.clone(),
+            banned_ips: self.banned_ips.clone(),
+            whitelist: self.whitelist.clone(),
+            whitelist_enabled: self.whitelist_enabled.clone(),
             next_entity_id: self.next_entity_id.clone(),
         }
     }

@@ -24,6 +24,7 @@ pub enum IncomingPacket {
     PlayerInput(PlayerInputPacket),
     CommandStep(CommandStepPacket),
     BlockPickRequest(BlockPickRequestPacket),
+    BlockEntityData(BlockEntityDataPacket),
     Unknown(u8, Vec<u8>),
 }
 
@@ -54,6 +55,7 @@ impl PacketHandler {
             ProtocolInfo::PLAYER_INPUT_PACKET => IncomingPacket::PlayerInput(PlayerInputPacket::decode(payload)),
             ProtocolInfo::COMMAND_STEP_PACKET => IncomingPacket::CommandStep(CommandStepPacket::decode(payload)),
             ProtocolInfo::BLOCK_PICK_REQUEST_PACKET => IncomingPacket::BlockPickRequest(BlockPickRequestPacket::decode(payload)),
+            ProtocolInfo::BLOCK_ENTITY_DATA_PACKET => IncomingPacket::BlockEntityData(BlockEntityDataPacket::decode(payload)),
             _ => IncomingPacket::Unknown(id, payload),
         }
     }
@@ -72,6 +74,10 @@ pub struct PlayerState {
     pub fall_distance: f32,
     pub gamemode: i32,
     pub health: u32,
+    pub food_level: u32,
+    pub food_saturation: f32,
+    pub xp_points: u32,
+    pub xp_level: u32,
     pub metadata: EntityMetadata,
     pub chunk_radius: i32,
     pub logged_in: bool,
@@ -79,6 +85,7 @@ pub struct PlayerState {
     /// Chunks already sent to the player to avoid duplicate transmissions.
     pub sent_chunks: std::collections::HashSet<(i32, i32)>,
     pub inventory: crate::inventory::inventories::PlayerInventory,
+    pub open_container: Option<(i32, i32, i32)>,
 }
 
 impl Default for PlayerState {
@@ -97,12 +104,17 @@ impl PlayerState {
             fall_distance: 0.0,
             gamemode: 0,
             health: 20,
+            food_level: 20,
+            food_saturation: 5.0,
+            xp_points: 0,
+            xp_level: 0,
             metadata: EntityMetadata::new(),
             chunk_radius: 8,
             logged_in: false,
             spawned: false,
             sent_chunks: std::collections::HashSet::new(),
             inventory: crate::inventory::inventories::PlayerInventory::new(),
+            open_container: None,
         }
     }
 }

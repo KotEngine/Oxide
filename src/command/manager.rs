@@ -79,6 +79,25 @@ impl CommandManager {
         self.register(Arc::new(DifficultyCommand));
         self.register(Arc::new(SpawnpointCommand));
         self.register(Arc::new(SetworldspawnCommand));
+        self.register(Arc::new(WeatherCommand));
+        self.register(Arc::new(XpCommand));
+        self.register(Arc::new(EffectCommand));
+        self.register(Arc::new(EnchantCommand));
+        self.register(Arc::new(ClearCommand));
+        self.register(Arc::new(SetBlockCommand));
+        self.register(Arc::new(FillCommand));
+        self.register(Arc::new(TitleCommand));
+        self.register(Arc::new(ParticleCommand));
+        self.register(Arc::new(PlaysoundCommand));
+        self.register(Arc::new(PingCommand));
+        self.register(Arc::new(DefaultGamemodeCommand));
+        self.register(Arc::new(BanCommand));
+        self.register(Arc::new(BanIpCommand));
+        self.register(Arc::new(PardonCommand));
+        self.register(Arc::new(PardonIpCommand));
+        self.register(Arc::new(BanListCommand));
+        self.register(Arc::new(WhitelistCommand));
+        self.register(Arc::new(crate::command::defaults::summon::SummonCommand));
     }
 
     pub fn generate_available_commands_packet(&self) -> crate::protocol::packets::AvailableCommandsPacket {

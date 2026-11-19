@@ -40,10 +40,20 @@ impl PlayerInventory {
     pub fn boots(&self) -> Item { self.armor.get_item(3) }
 
     pub fn get_contents(&self) -> Vec<Item> { self.main.get_contents() }
+    pub fn all_items(&self) -> Vec<Item> { self.main.get_contents() }
     pub fn set_contents(&self, items: Vec<Item>) { self.main.set_contents(items); }
     pub fn get_item(&self, slot: usize) -> Item { self.main.get_item(slot) }
     pub fn set_item(&self, slot: usize, item: Item) { self.main.set_item(slot, item); }
     pub fn add_item(&self, item: Item) -> Vec<Item> { self.main.add_item(item) }
+    pub fn size(&self) -> usize { 36 }
+    pub fn clear(&self) {
+        for i in 0..36 {
+            self.main.set_item(i, Item::air());
+        }
+        for i in 0..4 {
+            self.armor.set_item(i, Item::air());
+        }
+    }
 }
 
 impl Default for PlayerInventory {

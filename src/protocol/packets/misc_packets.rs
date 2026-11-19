@@ -2,6 +2,7 @@ use crate::utils::BinaryStream;
 use crate::protocol::packet::DataPacket;
 use crate::protocol::info::ProtocolInfo;
 
+#[derive(Debug, Clone)]
 pub struct BlockEntityDataPacket {
     pub x: i32,
     pub y: u32,
@@ -29,6 +30,7 @@ impl DataPacket for BlockEntityDataPacket {
     fn name(&self) -> &'static str { "BlockEntityDataPacket" }
 }
 
+#[derive(Debug, Clone)]
 pub struct BlockEventPacket {
     pub x: i32,
     pub y: u32,
@@ -82,6 +84,7 @@ impl DataPacket for BlockPickRequestPacket {
     fn name(&self) -> &'static str { "BlockPickRequestPacket" }
 }
 
+#[derive(Debug, Clone)]
 pub struct ExplodePacket {
     pub x: f32,
     pub y: f32,
