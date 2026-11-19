@@ -97,6 +97,8 @@ impl CommandManager {
         self.register(Arc::new(PardonIpCommand));
         self.register(Arc::new(BanListCommand));
         self.register(Arc::new(WhitelistCommand));
+        self.register(Arc::new(PluginsCommand));
+        self.register(Arc::new(ReloadCommand));
         self.register(Arc::new(crate::command::defaults::summon::SummonCommand));
     }
 

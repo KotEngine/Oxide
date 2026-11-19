@@ -224,6 +224,16 @@ impl LevelSoundEventPacket {
             disable_relative_volume: false,
         }
     }
+
+    pub fn new_with_extra(sound: u8, x: f32, y: f32, z: f32, extra_data: i32) -> Self {
+        Self {
+            sound, x, y, z,
+            extra_data,
+            pitch: 1,
+            is_baby_mob: false,
+            disable_relative_volume: false,
+        }
+    }
 }
 
 impl DataPacket for LevelSoundEventPacket {

@@ -410,3 +410,51 @@ fn test_gamemode_command_parsing() {
     let cmds = cmd_mgr.all_commands();
     assert!(cmds.iter().any(|c| c.name() == "gamemode"));
 }
+
+#[test]
+fn test_plugin_manager_lifecycle() {
+    use oxide::plugin::{PluginManager, Plugin, PluginDescription};
+
+    struct TestPlugin {
+        desc: PluginDescription,
+        enabled: bool,
+    }
+    impl Plugin for TestPlugin {
+        fn on_enable(&mut self) { self.enabled = true; }
+        fn on_disable(&mut self) { self.enabled = false; }
+        fn description(&self) -> &PluginDescription { &self.desc }
+    }
+
+    let pm = PluginManager::new();
+    assert_eq!(pm.count(), 0);
+
+    let desc = PluginDescription::new("TestPL", "1.0.0");
+    pm.enable(Box::new(TestPlugin { desc, enabled: false }));
+
+    assert_eq!(pm.count(), 1);
+    assert_eq!(pm.list(), vec!["TestPL".to_string()]);
+
+    pm.disable("TestPL");
+    assert_eq!(pm.count(), 0);
+}
+
+#[test]
+fn test_level_sound_event_with_extra() {
+    use oxide::protocol::packets::{LevelSoundEventPacket, level_event};
+
+    let pk = LevelSoundEventPacket::new_with_extra(level_event::SOUND_BREAK, 10.0, 64.0, 20.0, 2);
+    assert_eq!(pk.sound, level_event::SOUND_BREAK);
+    assert_eq!(pk.extra_data, 2);
+    assert_eq!(pk.x, 10.0);
+    assert_eq!(pk.y, 64.0);
+    assert_eq!(pk.z, 20.0);
+}
+
+#[test]
+fn test_expanded_catalog() {
+    let blocks = BlockRegistry::default();
+    assert!(blocks.count() >= 80, "Block registry should have 80+ blocks, got {}", blocks.count());
+
+    let items = ItemRegistry::default();
+    assert!(items.count() >= 60, "Item registry should have 60+ items, got {}", items.count());
+}

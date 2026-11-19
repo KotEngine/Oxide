@@ -111,7 +111,7 @@ impl LiquidSimulation {
                     let mut w = world.write();
                     w.set_block(x, y - 1, z, 8, 8); // Flowing water downwards
                 }
-                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 8, 8, update_block::FLAG_ALL);
+                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 8, 8, update_block::FLAG_ALL_PRIORITY);
                 broadcast_packet(rak, players, pk.encode()).await;
                 next_queue.push((x, y - 1, z));
                 flowed_down = true;
@@ -123,7 +123,7 @@ impl LiquidSimulation {
                     let mut w = world.write();
                     w.set_block(x, y - 1, z, new_block, 0);
                 }
-                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, new_block as u32, 0, update_block::FLAG_ALL);
+                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, new_block as u32, 0, update_block::FLAG_ALL_PRIORITY);
                 broadcast_packet(rak, players, pk.encode()).await;
                 send_fizz(x as f32, (y - 1) as f32, z as f32, rak, players).await;
                 flowed_down = true;
@@ -151,7 +151,7 @@ impl LiquidSimulation {
                         let mut w = world.write();
                         w.set_block(sx, sy, sz, 8, next_decay);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, next_decay as u32, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, next_decay as u32, update_block::FLAG_ALL_PRIORITY);
                     broadcast_packet(rak, players, pk.encode()).await;
                     next_queue.push((sx, sy, sz));
                 } else if side_id == 8 {
@@ -162,7 +162,7 @@ impl LiquidSimulation {
                             let mut w = world.write();
                             w.set_block(sx, sy, sz, 8, next_decay);
                         }
-                        let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, next_decay as u32, update_block::FLAG_ALL);
+                        let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, next_decay as u32, update_block::FLAG_ALL_PRIORITY);
                         broadcast_packet(rak, players, pk.encode()).await;
                         next_queue.push((sx, sy, sz));
                     }
@@ -174,7 +174,7 @@ impl LiquidSimulation {
                         let mut w = world.write();
                         w.set_block(sx, sy, sz, result_block, 0);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, result_block as u32, 0, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, result_block as u32, 0, update_block::FLAG_ALL_PRIORITY);
                     broadcast_packet(rak, players, pk.encode()).await;
                     send_fizz(sx as f32, sy as f32, sz as f32, rak, players).await;
                 }
@@ -206,7 +206,7 @@ impl LiquidSimulation {
                     let mut w = world.write();
                     w.set_block(x, y - 1, z, 10, 8); // Downward flowing lava
                 }
-                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 10, 8, update_block::FLAG_ALL);
+                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 10, 8, update_block::FLAG_ALL_PRIORITY);
                 broadcast_packet(rak, players, pk.encode()).await;
                 next_queue.push((x, y - 1, z));
                 flowed_down = true;
@@ -216,7 +216,7 @@ impl LiquidSimulation {
                     let mut w = world.write();
                     w.set_block(x, y - 1, z, 1, 0); // Stone
                 }
-                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 1, 0, update_block::FLAG_ALL);
+                let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 1, 0, update_block::FLAG_ALL_PRIORITY);
                 broadcast_packet(rak, players, pk.encode()).await;
                 send_fizz(x as f32, (y - 1) as f32, z as f32, rak, players).await;
                 flowed_down = true;
@@ -244,7 +244,7 @@ impl LiquidSimulation {
                         let mut w = world.write();
                         w.set_block(sx, sy, sz, 10, next_decay);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, next_decay as u32, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, next_decay as u32, update_block::FLAG_ALL_PRIORITY);
                     broadcast_packet(rak, players, pk.encode()).await;
                     next_queue.push((sx, sy, sz));
                 } else if side_id == 10 {
@@ -255,7 +255,7 @@ impl LiquidSimulation {
                             let mut w = world.write();
                             w.set_block(sx, sy, sz, 10, next_decay);
                         }
-                        let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, next_decay as u32, update_block::FLAG_ALL);
+                        let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, next_decay as u32, update_block::FLAG_ALL_PRIORITY);
                         broadcast_packet(rak, players, pk.encode()).await;
                         next_queue.push((sx, sy, sz));
                     }
@@ -265,7 +265,7 @@ impl LiquidSimulation {
                         let mut w = world.write();
                         w.set_block(sx, sy, sz, 4, 0);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 4, 0, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 4, 0, update_block::FLAG_ALL_PRIORITY);
                     broadcast_packet(rak, players, pk.encode()).await;
                     send_fizz(sx as f32, sy as f32, sz as f32, rak, players).await;
                 }

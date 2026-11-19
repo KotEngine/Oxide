@@ -196,14 +196,19 @@ impl EntityManager {
         rak: &RakNetServer,
         players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     ) {
+        let rand_x = (rand::random::<f32>() - 0.5) * 0.15;
+        let rand_z = (rand::random::<f32>() - 0.5) * 0.15;
+
         let ent = ActiveEntity {
             id: entity_id,
             entity_type: 64, // ItemEntity
             name: "Item".to_string(),
-            x, y, z,
-            motion_x: 0.0,
+            x: x + rand_x as f64,
+            y,
+            z: z + rand_z as f64,
+            motion_x: rand_x,
             motion_y: 0.2,
-            motion_z: 0.0,
+            motion_z: rand_z,
             yaw: 0.0,
             pitch: 0.0,
             health: 5.0,
@@ -212,14 +217,16 @@ impl EntityManager {
             lifetime: 0,
             owner_eid: None,
             item_drop: Some(item.clone()),
-            pickup_delay: 15, // 0.75s before pickup
+            pickup_delay: 10,
             attack_cooldown: 0,
         };
 
         self.entities.write().insert(entity_id, ent);
 
-        let mut pk = AddItemEntityPacket::new(entity_id, item, x as f32, y as f32, z as f32);
+        let mut pk = AddItemEntityPacket::new(entity_id, item, (x + rand_x as f64) as f32, y as f32, (z + rand_z as f64) as f32);
+        pk.speed_x = rand_x;
         pk.speed_y = 0.2;
+        pk.speed_z = rand_z;
         broadcast_to_all(rak, players, pk.encode()).await;
     }
 

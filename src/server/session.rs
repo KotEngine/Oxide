@@ -71,6 +71,7 @@ impl OxideServer {
         let event_bus = Arc::new(crate::event::EventBus::new());
         let scheduler = Arc::new(crate::scheduler::Scheduler::new());
         let plugin_manager = Arc::new(crate::plugin::PluginManager::new());
+        plugin_manager.load_directory("plugins");
         let permission_manager = Arc::new(crate::permission::PermissionManager::new());
 
         Ok(Self {
@@ -259,8 +260,9 @@ impl OxideServer {
     }
 
     pub fn find_player_by_name(&self, name: &str) -> Option<(SocketAddr, String)> {
+        let clean = name.trim().trim_matches('"');
         let guard = self.players.read();
-        let lower = name.to_lowercase();
+        let lower = clean.to_lowercase();
         for (addr, state) in guard.iter() {
             if state.username.to_lowercase() == lower {
                 return Some((*addr, state.username.clone()));
@@ -315,8 +317,8 @@ async fn tick_loop(h: TickHandles) {
         // Ticking furnaces (every tick)
         h.tile_manager.tick_furnaces(&h.crafting_manager);
 
-        // Ticking liquid physics (every 5 ticks = 4 updates/sec)
-        if tick_counter % 5 == 0 {
+        // Ticking liquid physics (every 2 ticks = 10 updates/sec)
+        if tick_counter % 2 == 0 {
             h.liquid_sim.tick(&h.world, &h.rak, &h.players).await;
         }
 
@@ -1219,79 +1221,39 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
             let mut full_cmd = cs.command.trim().to_string();
             if !cs.input_json.is_empty() {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&cs.input_json) {
-                    match val {
-                        serde_json::Value::Object(map) => {
-                            if let Some(args_val) = map.get("args") {
-                                if let Some(s) = args_val.as_str() {
-                                    let trimmed = s.trim();
-                                    if !trimmed.is_empty() {
-                                        full_cmd.push(' ');
-                                        full_cmd.push_str(trimmed);
-                                    }
-                                } else if let Some(arr) = args_val.as_array() {
-                                    for item in arr {
-                                        if let Some(s) = item.as_str() {
-                                            full_cmd.push(' ');
-                                            full_cmd.push_str(s.trim());
-                                        } else {
-                                            full_cmd.push(' ');
-                                            full_cmd.push_str(&item.to_string());
-                                        }
-                                    }
-                                }
-                            } else {
-                                for (_k, v) in map {
-                                    match v {
-                                        serde_json::Value::String(s) => {
-                                            let trimmed = s.trim();
-                                            if !trimmed.is_empty() {
-                                                full_cmd.push(' ');
-                                                full_cmd.push_str(trimmed);
-                                            }
-                                        }
-                                        serde_json::Value::Number(n) => {
-                                            full_cmd.push(' ');
-                                            full_cmd.push_str(&n.to_string());
-                                        }
-                                        serde_json::Value::Bool(b) => {
-                                            full_cmd.push(' ');
-                                            full_cmd.push_str(&b.to_string());
-                                        }
-                                        _ => {}
-                                    }
+                    fn extract_strings(v: &serde_json::Value, list: &mut Vec<String>) {
+                        match v {
+                            serde_json::Value::String(s) => {
+                                let t = s.trim();
+                                if !t.is_empty() { list.push(t.to_string()); }
+                            }
+                            serde_json::Value::Number(n) => {
+                                list.push(n.to_string());
+                            }
+                            serde_json::Value::Bool(b) => {
+                                list.push(b.to_string());
+                            }
+                            serde_json::Value::Array(arr) => {
+                                for item in arr { extract_strings(item, list); }
+                            }
+                            serde_json::Value::Object(map) => {
+                                if let Some(t) = map.get("text").and_then(|x| x.as_str()) {
+                                    let trimmed = t.trim();
+                                    if !trimmed.is_empty() { list.push(trimmed.to_string()); }
+                                } else if let Some(args) = map.get("args") {
+                                    extract_strings(args, list);
+                                } else {
+                                    for (_k, sub) in map { extract_strings(sub, list); }
                                 }
                             }
+                            _ => {}
                         }
-                        serde_json::Value::Array(arr) => {
-                            for v in arr {
-                                match v {
-                                    serde_json::Value::String(s) => {
-                                        let trimmed = s.trim();
-                                        if !trimmed.is_empty() {
-                                            full_cmd.push(' ');
-                                            full_cmd.push_str(trimmed);
-                                        }
-                                    }
-                                    serde_json::Value::Number(n) => {
-                                        full_cmd.push(' ');
-                                        full_cmd.push_str(&n.to_string());
-                                    }
-                                    serde_json::Value::Bool(b) => {
-                                        full_cmd.push(' ');
-                                        full_cmd.push_str(&b.to_string());
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        serde_json::Value::String(s) => {
-                            let trimmed = s.trim();
-                            if !trimmed.is_empty() {
-                                full_cmd.push(' ');
-                                full_cmd.push_str(trimmed);
-                            }
-                        }
-                        _ => {}
+                    }
+                    let mut extracted = Vec::new();
+                    extract_strings(&val, &mut extracted);
+                    if !extracted.is_empty() {
+                        full_cmd.push(' ');
+                        full_cmd.push_str(&extracted.join(" "));
                     }
                 }
             }
@@ -1409,7 +1371,7 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     let pk = UpdateBlockPacket::new(x, y as u32, z, 0, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
 
-    // Block break particle and sound effect (Bedrock plays the block-specific break sound automatically via EVENT_PARTICLE_DESTROY)
+    // Block break particle and sound effect
     let destroy_pk = LevelEventPacket::new(
         level_event::EVENT_PARTICLE_DESTROY,
         x as f32 + 0.5,
@@ -1418,6 +1380,15 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
         (old_id as i32) | ((old_meta as i32) << 8),
     );
     broadcast_except(&self_data.rak, &self_data.players, None, destroy_pk.encode()).await;
+
+    let break_sound = LevelSoundEventPacket::new_with_extra(
+        level_event::SOUND_BREAK,
+        x as f32 + 0.5,
+        y as f32 + 0.5,
+        z as f32 + 0.5,
+        old_id as i32,
+    );
+    broadcast_except(&self_data.rak, &self_data.players, None, break_sound.encode()).await;
 
     // Gravity check for sand (12) and gravel (13) directly above
     if y + 1 < 256 {
@@ -1460,32 +1431,56 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     // Spawn block drop item entity if survival
     let is_survival = self_data.players.read().get(&addr).map(|s| s.gamemode == 0).unwrap_or(true);
     if is_survival {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let offset_x: f32 = rng.gen_range(-0.15..0.15);
-        let offset_z: f32 = rng.gen_range(-0.15..0.15);
-        let speed_x: f32 = rng.gen_range(-0.1..0.1);
-        let speed_y: f32 = 0.2;
-        let speed_z: f32 = rng.gen_range(-0.1..0.1);
+        let drops = get_block_drops(old_id, old_meta);
+        for drop_item in drops {
+            let entity_id = {
+                let mut eid = self_data.next_entity_id.write();
+                let id = *eid;
+                *eid += 1;
+                id
+            };
+            self_data.entity_manager.spawn_item_drop(
+                entity_id,
+                drop_item,
+                x as f64 + 0.5,
+                y as f64 + 0.5,
+                z as f64 + 0.5,
+                &self_data.rak,
+                &self_data.players,
+            ).await;
+        }
+    }
+}
 
-        let entity_id = {
-            let mut eid = self_data.next_entity_id.write();
-            let id = *eid;
-            *eid += 1;
-            id
-        };
-        let drop_item = crate::protocol::types::Item::new(old_id as i32, 0, 1);
-        let mut drop_pk = AddItemEntityPacket::new(
-            entity_id,
-            drop_item,
-            x as f32 + 0.5 + offset_x,
-            y as f32 + 0.5,
-            z as f32 + 0.5 + offset_z,
-        );
-        drop_pk.speed_x = speed_x;
-        drop_pk.speed_y = speed_y;
-        drop_pk.speed_z = speed_z;
-        broadcast_except(&self_data.rak, &self_data.players, None, drop_pk.encode()).await;
+fn get_block_drops(block_id: u8, meta: u8) -> Vec<crate::protocol::types::Item> {
+    use crate::protocol::types::Item;
+    match block_id {
+        0 | 7 | 8 | 9 | 10 | 11 | 90 | 119 => vec![],
+        20 | 79 | 95 | 102 | 160 | 52 => vec![],
+        1 => vec![Item::new(4, 0, 1)], // Stone -> Cobblestone
+        2 => vec![Item::new(3, 0, 1)], // Grass -> Dirt
+        16 => vec![Item::new(263, 0, 1)], // Coal Ore -> Coal
+        56 => vec![Item::new(264, 0, 1)], // Diamond Ore -> Diamond
+        129 => vec![Item::new(388, 0, 1)], // Emerald Ore -> Emerald
+        153 => vec![Item::new(406, 0, 1)], // Quartz Ore -> Quartz
+        21 => vec![Item::new(351, 4, 5)], // Lapis Ore -> 5 Lapis
+        73 | 74 => vec![Item::new(331, 0, 4)], // Redstone Ore -> 4 Redstone
+        89 => vec![Item::new(348, 0, 3)], // Glowstone -> 3 Dust
+        82 => vec![Item::new(337, 0, 4)], // Clay Block -> 4 Clay Balls
+        47 => vec![Item::new(340, 0, 3)], // Bookshelf -> 3 Books
+        103 => vec![Item::new(360, 0, 5)], // Melon Block -> 5 Slices
+        59 => if meta >= 7 { vec![Item::new(296, 0, 1), Item::new(295, 0, 2)] } else { vec![Item::new(295, 0, 1)] },
+        141 => if meta >= 7 { vec![Item::new(391, 0, 3)] } else { vec![Item::new(391, 0, 1)] },
+        142 => if meta >= 7 { vec![Item::new(392, 0, 3)] } else { vec![Item::new(392, 0, 1)] },
+        244 => if meta >= 7 { vec![Item::new(434, 0, 1), Item::new(435, 0, 2)] } else { vec![Item::new(435, 0, 1)] },
+        13 => if rand::random::<f32>() < 0.15 { vec![Item::new(318, 0, 1)] } else { vec![Item::new(13, 0, 1)] },
+        18 | 161 => {
+            let r = rand::random::<f32>();
+            if r < 0.05 { vec![Item::new(6, (meta & 0x03) as i32, 1)] }
+            else if r < 0.06 { vec![Item::new(260, 0, 1)] }
+            else { vec![] }
+        }
+        _ => vec![Item::new(block_id as i32, meta as i32, 1)],
     }
 }
 
@@ -2012,12 +2007,13 @@ async fn handle_place_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     let pk = UpdateBlockPacket::new(nx, ny as u32, nz, item_id as u32, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
 
-    // Block place sound
-    let place_sound = LevelSoundEventPacket::new(
+    // Block place sound with block ID
+    let place_sound = LevelSoundEventPacket::new_with_extra(
         level_event::SOUND_PLACE,
         nx as f32 + 0.5,
         ny as f32 + 0.5,
         nz as f32 + 0.5,
+        item_id as i32,
     );
     broadcast_except(&self_data.rak, &self_data.players, None, place_sound.encode()).await;
 

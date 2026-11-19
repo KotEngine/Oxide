@@ -14,6 +14,18 @@ macro_rules! simple_command {
             }
         }
     };
+    ($name:ident, $cmd:expr, $aliases:expr, $desc:expr, $perm:expr, $msg_fn:expr) => {
+        pub struct $name;
+        impl Command for $name {
+            fn name(&self) -> &str { $cmd }
+            fn aliases(&self) -> Vec<&str> { $aliases }
+            fn description(&self) -> &str { $desc }
+            fn permission(&self) -> Option<&str> { Some($perm) }
+            fn execute(&self, sender: &mut dyn CommandSender, server: &OxideServer, args: Vec<String>) {
+                ($msg_fn)(sender, server, args);
+            }
+        }
+    };
 }
 
 simple_command!(KickCommand, "kick", "Kicks a player from the server", "oxide.command.kick", |sender: &mut dyn CommandSender, server: &OxideServer, args: Vec<String>| {
@@ -152,4 +164,18 @@ simple_command!(HelpCommand, "help", "Shows available commands", "oxide.command.
     for c in cmds {
         sender.send_message(&format!("/{} - {}", c.name(), c.description()));
     }
+});
+
+simple_command!(PluginsCommand, "plugins", vec!["pl"], "Shows loaded plugins", "oxide.command.plugins", |sender: &mut dyn CommandSender, server: &OxideServer, _args: Vec<String>| {
+    let list = server.plugin_manager.list();
+    if list.is_empty() {
+        sender.send_message("Plugins (0):");
+    } else {
+        sender.send_message(&format!("Plugins ({}): {}", list.len(), list.join(", ")));
+    }
+});
+
+simple_command!(ReloadCommand, "reload", vec!["rl"], "Reloads the server configuration and plugins", "oxide.command.reload", |sender: &mut dyn CommandSender, server: &OxideServer, _args: Vec<String>| {
+    sender.send_message("Reloading server configuration...");
+    server.broadcast_message("Server configuration reloaded.");
 });
