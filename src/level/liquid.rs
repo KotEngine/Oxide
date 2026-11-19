@@ -98,6 +98,7 @@ impl LiquidSimulation {
         next_queue: &mut Vec<(i32, i32, i32)>,
     ) {
         // Downward flow check
+        let mut flowed_down = false;
         if y > 0 {
             let below_id = {
                 let mut w = world.write();
@@ -113,7 +114,7 @@ impl LiquidSimulation {
                 let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 8, 8, update_block::FLAG_ALL);
                 broadcast_packet(rak, players, pk.encode()).await;
                 next_queue.push((x, y - 1, z));
-                return;
+                flowed_down = true;
             } else if below_id == 10 || below_id == 11 {
                 // Water hits lava from above -> Obsidian or Cobblestone
                 let lava_meta = get_block_meta(world, x, y - 1, z);
@@ -125,13 +126,19 @@ impl LiquidSimulation {
                 let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, new_block as u32, 0, update_block::FLAG_ALL);
                 broadcast_packet(rak, players, pk.encode()).await;
                 send_fizz(x as f32, (y - 1) as f32, z as f32, rak, players).await;
-                return;
+                flowed_down = true;
             }
+        }
+
+        // Only stop horizontal flow if non-source water flowed down
+        if flowed_down && meta != 0 {
+            return;
         }
 
         // Horizontal spread
         let current_level = if meta >= 8 { 0 } else { meta };
         if current_level < 7 {
+            let next_decay = current_level + 1;
             let sides = [(x - 1, y, z), (x + 1, y, z), (x, y, z - 1), (x, y, z + 1)];
             for (sx, sy, sz) in sides {
                 let side_id = {
@@ -142,18 +149,32 @@ impl LiquidSimulation {
                 if is_replaceable(side_id) {
                     {
                         let mut w = world.write();
-                        w.set_block(sx, sy, sz, 8, current_level + 1);
+                        w.set_block(sx, sy, sz, 8, next_decay);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, (current_level + 1) as u32, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, next_decay as u32, update_block::FLAG_ALL);
                     broadcast_packet(rak, players, pk.encode()).await;
                     next_queue.push((sx, sy, sz));
+                } else if side_id == 8 {
+                    // Update existing flowing water if new decay is stronger
+                    let existing_decay = get_block_meta(world, sx, sy, sz);
+                    if existing_decay > next_decay {
+                        {
+                            let mut w = world.write();
+                            w.set_block(sx, sy, sz, 8, next_decay);
+                        }
+                        let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 8, next_decay as u32, update_block::FLAG_ALL);
+                        broadcast_packet(rak, players, pk.encode()).await;
+                        next_queue.push((sx, sy, sz));
+                    }
                 } else if side_id == 10 || side_id == 11 {
-                    // Water touches lava horizontally -> Cobblestone
+                    // Water touches lava horizontally -> Obsidian or Cobblestone
+                    let lava_meta = get_block_meta(world, sx, sy, sz);
+                    let result_block = if lava_meta == 0 { 49 } else { 4 };
                     {
                         let mut w = world.write();
-                        w.set_block(sx, sy, sz, 4, 0);
+                        w.set_block(sx, sy, sz, result_block, 0);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 4, 0, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, result_block as u32, 0, update_block::FLAG_ALL);
                     broadcast_packet(rak, players, pk.encode()).await;
                     send_fizz(sx as f32, sy as f32, sz as f32, rak, players).await;
                 }
@@ -173,6 +194,7 @@ impl LiquidSimulation {
         next_queue: &mut Vec<(i32, i32, i32)>,
     ) {
         // Downward check
+        let mut flowed_down = false;
         if y > 0 {
             let below_id = {
                 let mut w = world.write();
@@ -187,7 +209,7 @@ impl LiquidSimulation {
                 let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 10, 8, update_block::FLAG_ALL);
                 broadcast_packet(rak, players, pk.encode()).await;
                 next_queue.push((x, y - 1, z));
-                return;
+                flowed_down = true;
             } else if below_id == 8 || below_id == 9 {
                 // Lava flows down onto water -> Stone
                 {
@@ -197,13 +219,19 @@ impl LiquidSimulation {
                 let pk = UpdateBlockPacket::new(x, (y - 1) as u32, z, 1, 0, update_block::FLAG_ALL);
                 broadcast_packet(rak, players, pk.encode()).await;
                 send_fizz(x as f32, (y - 1) as f32, z as f32, rak, players).await;
-                return;
+                flowed_down = true;
             }
+        }
+
+        // Only stop horizontal flow if non-source lava flowed down
+        if flowed_down && meta != 0 {
+            return;
         }
 
         // Horizontal spread for lava (decay step = 2)
         let current_level = if meta >= 8 { 0 } else { meta };
         if current_level < 6 {
+            let next_decay = current_level + 2;
             let sides = [(x - 1, y, z), (x + 1, y, z), (x, y, z - 1), (x, y, z + 1)];
             for (sx, sy, sz) in sides {
                 let side_id = {
@@ -214,11 +242,23 @@ impl LiquidSimulation {
                 if is_replaceable(side_id) {
                     {
                         let mut w = world.write();
-                        w.set_block(sx, sy, sz, 10, current_level + 2);
+                        w.set_block(sx, sy, sz, 10, next_decay);
                     }
-                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, (current_level + 2) as u32, update_block::FLAG_ALL);
+                    let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, next_decay as u32, update_block::FLAG_ALL);
                     broadcast_packet(rak, players, pk.encode()).await;
                     next_queue.push((sx, sy, sz));
+                } else if side_id == 10 {
+                    // Update existing flowing lava if new decay is stronger
+                    let existing_decay = get_block_meta(world, sx, sy, sz);
+                    if existing_decay > next_decay {
+                        {
+                            let mut w = world.write();
+                            w.set_block(sx, sy, sz, 10, next_decay);
+                        }
+                        let pk = UpdateBlockPacket::new(sx, sy as u32, sz, 10, next_decay as u32, update_block::FLAG_ALL);
+                        broadcast_packet(rak, players, pk.encode()).await;
+                        next_queue.push((sx, sy, sz));
+                    }
                 } else if side_id == 8 || side_id == 9 {
                     // Lava flows into water horizontally -> Cobblestone
                     {
@@ -235,8 +275,8 @@ impl LiquidSimulation {
 }
 
 fn is_replaceable(id: u8) -> bool {
-    // Air, tall grass, flowers, dead bush, snow layer, fire
-    matches!(id, 0 | 31 | 37 | 38 | 32 | 78 | 51)
+    // Air, saplings, tall grass, dead bush, flowers, mushrooms, torches, fire, redstone, crops, signs, snow, reeds, vines, lily pads, double plants
+    matches!(id, 0 | 6 | 31 | 32 | 37 | 38 | 39 | 40 | 50 | 51 | 55 | 59 | 63 | 68 | 78 | 83 | 106 | 111 | 175)
 }
 
 fn get_block_meta(world: &Arc<RwLock<World>>, x: i32, y: i32, z: i32) -> u8 {
@@ -270,8 +310,14 @@ async fn broadcast_packet(
 ) {
     let recipients: Vec<SocketAddr> = {
         let guard = players.read();
-        guard.keys().copied().collect()
+        guard.iter()
+            .filter(|(_, s)| s.logged_in)
+            .map(|(a, _)| *a)
+            .collect()
     };
+    if recipients.is_empty() {
+        return;
+    }
     let batch = crate::protocol::batch::BatchPacket::encode(&[data]);
     for addr in recipients {
         rak.send_encapsulated(addr, batch.clone(), true).await;

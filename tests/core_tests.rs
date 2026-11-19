@@ -316,3 +316,97 @@ async fn test_liquid_simulation_spread() {
     };
     assert_eq!(below_id, 8, "Water should flow downward into empty air block");
 }
+
+#[tokio::test]
+async fn test_liquid_horizontal_spread() {
+    use oxide::level::{World, LiquidSimulation};
+    use oxide::raknet::RakNetServer;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use std::collections::HashMap;
+
+    let world = Arc::new(RwLock::new(World::new()));
+    // Set up ground at y=3 (solid dirt = 3), water source at (10, 4, 10), air surrounding at y=4
+    {
+        let mut w = world.write();
+        w.set_block(10, 3, 10, 3, 0); // Solid ground directly below
+        w.set_block(9, 3, 10, 3, 0);
+        w.set_block(11, 3, 10, 3, 0);
+        w.set_block(10, 3, 9, 3, 0);
+        w.set_block(10, 3, 11, 3, 0);
+
+        w.set_block(10, 4, 10, 8, 0); // Water source
+        w.set_block(9, 4, 10, 0, 0);  // Air to the west
+        w.set_block(11, 4, 10, 0, 0); // Air to the east
+        w.set_block(10, 4, 9, 0, 0);  // Air to the north
+        w.set_block(10, 4, 11, 0, 0); // Air to the south
+    }
+
+    let liquid = LiquidSimulation::new();
+    liquid.schedule_update(10, 4, 10);
+
+    let rak = Arc::new(RakNetServer::new("127.0.0.1:0".parse().unwrap(), "Oxide".to_string()).await.unwrap());
+    let players = Arc::new(RwLock::new(HashMap::new()));
+
+    liquid.tick(&world, &rak, &players).await;
+
+    // Verify all 4 horizontal neighbors became water (8) with decay 1
+    let mut w = world.write();
+    assert_eq!(w.get_block_id(9, 4, 10), 8);
+    assert_eq!(w.get_block_id(11, 4, 10), 8);
+    assert_eq!(w.get_block_id(10, 4, 9), 8);
+    assert_eq!(w.get_block_id(10, 4, 11), 8);
+}
+
+#[tokio::test]
+async fn test_liquid_lava_spread() {
+    use oxide::level::{World, LiquidSimulation};
+    use oxide::raknet::RakNetServer;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use std::collections::HashMap;
+
+    let world = Arc::new(RwLock::new(World::new()));
+    // Set up ground at y=3 (solid stone = 1), lava source at (20, 4, 20), air surrounding at y=4
+    {
+        let mut w = world.write();
+        w.set_block(20, 3, 20, 1, 0); // Solid ground
+        w.set_block(19, 3, 20, 1, 0);
+        w.set_block(21, 3, 20, 1, 0);
+        w.set_block(20, 3, 19, 1, 0);
+        w.set_block(20, 3, 21, 1, 0);
+
+        w.set_block(20, 4, 20, 10, 0); // Lava source
+        w.set_block(19, 4, 20, 0, 0);
+        w.set_block(21, 4, 20, 0, 0);
+        w.set_block(20, 4, 19, 0, 0);
+        w.set_block(20, 4, 21, 0, 0);
+    }
+
+    let liquid = LiquidSimulation::new();
+    liquid.schedule_update(20, 4, 20);
+
+    let rak = Arc::new(RakNetServer::new("127.0.0.1:0".parse().unwrap(), "Oxide".to_string()).await.unwrap());
+    let players = Arc::new(RwLock::new(HashMap::new()));
+
+    liquid.tick(&world, &rak, &players).await;
+
+    // Verify all 4 horizontal neighbors became lava (10)
+    let mut w = world.write();
+    assert_eq!(w.get_block_id(19, 4, 20), 10);
+    assert_eq!(w.get_block_id(21, 4, 20), 10);
+    assert_eq!(w.get_block_id(20, 4, 19), 10);
+    assert_eq!(w.get_block_id(20, 4, 21), 10);
+}
+
+#[test]
+fn test_gamemode_command_parsing() {
+    use oxide::command::CommandManager;
+
+    let cmd_mgr = CommandManager::new();
+    assert!(cmd_mgr.count() > 0);
+
+    // Test that gamemode command is registered
+    let cmds = cmd_mgr.all_commands();
+    assert!(cmds.iter().any(|c| c.name() == "gamemode"));
+}

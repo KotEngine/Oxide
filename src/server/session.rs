@@ -945,12 +945,92 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
             }
         }
         IncomingPacket::CommandStep(cs) => {
-            let cmd_line = cs.command.trim();
+            let mut full_cmd = cs.command.trim().to_string();
+            if !cs.input_json.is_empty() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&cs.input_json) {
+                    match val {
+                        serde_json::Value::Object(map) => {
+                            if let Some(args_val) = map.get("args") {
+                                if let Some(s) = args_val.as_str() {
+                                    let trimmed = s.trim();
+                                    if !trimmed.is_empty() {
+                                        full_cmd.push(' ');
+                                        full_cmd.push_str(trimmed);
+                                    }
+                                } else if let Some(arr) = args_val.as_array() {
+                                    for item in arr {
+                                        if let Some(s) = item.as_str() {
+                                            full_cmd.push(' ');
+                                            full_cmd.push_str(s.trim());
+                                        } else {
+                                            full_cmd.push(' ');
+                                            full_cmd.push_str(&item.to_string());
+                                        }
+                                    }
+                                }
+                            } else {
+                                for (_k, v) in map {
+                                    match v {
+                                        serde_json::Value::String(s) => {
+                                            let trimmed = s.trim();
+                                            if !trimmed.is_empty() {
+                                                full_cmd.push(' ');
+                                                full_cmd.push_str(trimmed);
+                                            }
+                                        }
+                                        serde_json::Value::Number(n) => {
+                                            full_cmd.push(' ');
+                                            full_cmd.push_str(&n.to_string());
+                                        }
+                                        serde_json::Value::Bool(b) => {
+                                            full_cmd.push(' ');
+                                            full_cmd.push_str(&b.to_string());
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        serde_json::Value::Array(arr) => {
+                            for v in arr {
+                                match v {
+                                    serde_json::Value::String(s) => {
+                                        let trimmed = s.trim();
+                                        if !trimmed.is_empty() {
+                                            full_cmd.push(' ');
+                                            full_cmd.push_str(trimmed);
+                                        }
+                                    }
+                                    serde_json::Value::Number(n) => {
+                                        full_cmd.push(' ');
+                                        full_cmd.push_str(&n.to_string());
+                                    }
+                                    serde_json::Value::Bool(b) => {
+                                        full_cmd.push(' ');
+                                        full_cmd.push_str(&b.to_string());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        serde_json::Value::String(s) => {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                full_cmd.push(' ');
+                                full_cmd.push_str(trimmed);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let clean_cmd = full_cmd.strip_prefix('/').unwrap_or(&full_cmd).trim();
+            debug!("CommandStep from {}: '{}' (raw: '{}', json: '{}')", addr, clean_cmd, cs.command, cs.input_json);
             let name = self_data.players.read().get(&addr).map(|s| s.username.clone()).unwrap_or_default();
             let mut sender = crate::command::sender::PlayerSender::new(name, addr, true, self_data.clone());
-            let handled = self_data.command_manager.dispatch(&mut sender, self_data, cmd_line);
+            let handled = self_data.command_manager.dispatch(&mut sender, self_data, clean_cmd);
             if !handled {
-                self_data.send_message_to(addr, &format!("Unknown command: /{}. Type /help for help.", cmd_line));
+                self_data.send_message_to(addr, &format!("Unknown command: /{}. Type /help for help.", clean_cmd));
             }
         }
         IncomingPacket::BlockPickRequest(bp) => {
@@ -996,12 +1076,19 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
         }
     }
 
-    let (player_name, old_id) = {
+    let (player_name, old_id, old_meta) = {
         let mut world = self_data.world.write();
         let id = world.get_block_id(x, y, z);
         if id == 0 || id == 7 { // cannot break air or bedrock
             return;
         }
+        let chunk_x = x >> 4;
+        let chunk_z = z >> 4;
+        let cx = (x & 0x0f) as usize;
+        let cz = (z & 0x0f) as usize;
+        let chunk = world.get_chunk_or_generate(chunk_x, chunk_z);
+        let meta = chunk.get_block_data(cx, y as usize, cz);
+
         let name = self_data.players.read().get(&addr).map(|s| s.username.clone()).unwrap_or_default();
         let ev = self_data.event_bus.fire(crate::event::event::BlockBreakEvent {
             player_name: name.clone(),
@@ -1012,7 +1099,7 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
             cancelled: false,
         });
         if ev.cancelled {
-            let revert_pk = UpdateBlockPacket::new(x, y as u32, z, id as u32, 0, update_block::FLAG_ALL);
+            let revert_pk = UpdateBlockPacket::new(x, y as u32, z, id as u32, meta as u32, update_block::FLAG_ALL);
             let rak = self_data.rak.clone();
             tokio::spawn(async move {
                 send_packet(&rak, addr, revert_pk.encode()).await;
@@ -1020,31 +1107,22 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
             return;
         }
         world.set_block(x, y, z, 0, 0);
-        (name, id)
+        (name, id, meta)
     };
     let _ = player_name;
 
     let pk = UpdateBlockPacket::new(x, y as u32, z, 0, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
 
-    // Block break particle effect
+    // Block break particle and sound effect (Bedrock plays the block-specific break sound automatically via EVENT_PARTICLE_DESTROY)
     let destroy_pk = LevelEventPacket::new(
         level_event::EVENT_PARTICLE_DESTROY,
         x as f32 + 0.5,
         y as f32 + 0.5,
         z as f32 + 0.5,
-        old_id as i32,
+        (old_id as i32) | ((old_meta as i32) << 8),
     );
     broadcast_except(&self_data.rak, &self_data.players, None, destroy_pk.encode()).await;
-
-    // Block break sound
-    let break_sound = LevelSoundEventPacket::new(
-        level_event::SOUND_BREAK,
-        x as f32 + 0.5,
-        y as f32 + 0.5,
-        z as f32 + 0.5,
-    );
-    broadcast_except(&self_data.rak, &self_data.players, None, break_sound.encode()).await;
 
     // Gravity check for sand (12) and gravel (13) directly above
     if y + 1 < 256 {
@@ -1126,6 +1204,7 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
     };
 
     let item_id = ui.item.id;
+    let item_meta = ui.item.meta;
 
     // 1. Projectiles: Ender Pearl (368), Snowball (332), Egg (344), Bow (261), Exp Bottle (384)
     let projectile_kind = match item_id {
@@ -1243,8 +1322,12 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
         }
     }
 
-    // 3. Bucket handling: Water Bucket (326), Lava Bucket (327), Empty Bucket (325)
-    if item_id == 326 || item_id == 327 || item_id == 325 {
+    // 3. Bucket handling: Water Bucket (326 or 325:8/9), Lava Bucket (327 or 325:10/11), Empty Bucket (325:0)
+    let is_water_bucket = item_id == 326 || (item_id == 325 && (item_meta == 8 || item_meta == 9));
+    let is_lava_bucket = item_id == 327 || (item_id == 325 && (item_meta == 10 || item_meta == 11));
+    let is_empty_bucket = item_id == 325 && !is_water_bucket && !is_lava_bucket;
+
+    if is_water_bucket || is_lava_bucket || is_empty_bucket {
         if ui.face >= 0 && ui.face <= 5 {
             let (nx, ny, nz) = match ui.face {
                 0 => (ui.x, ui.y as i32 - 1, ui.z),
@@ -1256,7 +1339,7 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
                 _ => (ui.x, ui.y as i32 + 1, ui.z),
             };
 
-            if item_id == 326 {
+            if is_water_bucket {
                 {
                     let mut w = self_data.world.write();
                     w.set_block(nx, ny, nz, 8, 0);
@@ -1280,7 +1363,7 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
                     send_packet(&self_data.rak, addr, slot_pk.encode()).await;
                 }
                 return;
-            } else if item_id == 327 {
+            } else if is_lava_bucket {
                 {
                     let mut w = self_data.world.write();
                     w.set_block(nx, ny, nz, 10, 0);
@@ -1304,7 +1387,7 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
                     send_packet(&self_data.rak, addr, slot_pk.encode()).await;
                 }
                 return;
-            } else if item_id == 325 {
+            } else if is_empty_bucket {
                 let target_id = {
                     let mut w = self_data.world.write();
                     w.get_block_id(ui.x, ui.y as i32, ui.z)
@@ -1320,8 +1403,14 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
                     let sound = LevelSoundEventPacket::new(level_event::SOUND_BUCKET_FILL_WATER, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
                     broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
 
+                    // Wake up surrounding liquid
+                    self_data.liquid_sim.schedule_update(ui.x - 1, ui.y as i32, ui.z);
+                    self_data.liquid_sim.schedule_update(ui.x + 1, ui.y as i32, ui.z);
+                    self_data.liquid_sim.schedule_update(ui.x, ui.y as i32, ui.z - 1);
+                    self_data.liquid_sim.schedule_update(ui.x, ui.y as i32, ui.z + 1);
+
                     if is_survival {
-                        let water_bucket = crate::protocol::types::Item::new(326, 0, 1);
+                        let water_bucket = crate::protocol::types::Item::new(325, 8, 1);
                         {
                             let mut players = self_data.players.write();
                             if let Some(s) = players.get_mut(&addr) {
@@ -1343,8 +1432,14 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
                     let sound = LevelSoundEventPacket::new(level_event::SOUND_BUCKET_FILL_LAVA, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
                     broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
 
+                    // Wake up surrounding liquid
+                    self_data.liquid_sim.schedule_update(ui.x - 1, ui.y as i32, ui.z);
+                    self_data.liquid_sim.schedule_update(ui.x + 1, ui.y as i32, ui.z);
+                    self_data.liquid_sim.schedule_update(ui.x, ui.y as i32, ui.z - 1);
+                    self_data.liquid_sim.schedule_update(ui.x, ui.y as i32, ui.z + 1);
+
                     if is_survival {
-                        let lava_bucket = crate::protocol::types::Item::new(327, 0, 1);
+                        let lava_bucket = crate::protocol::types::Item::new(325, 10, 1);
                         {
                             let mut players = self_data.players.write();
                             if let Some(s) = players.get_mut(&addr) {
