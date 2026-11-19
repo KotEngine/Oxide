@@ -269,3 +269,50 @@ fn test_add_item_entity_packet_with_velocity() {
     assert!((decoded.speed_y - 0.2).abs() < 1e-4);
     assert!((decoded.speed_z - (-0.08)).abs() < 1e-4);
 }
+
+#[test]
+fn test_projectile_types_and_constants() {
+    use oxide::entity::projectile::ProjectileKind;
+
+    assert_eq!(ProjectileKind::EnderPearl.network_entity_type(), 87);
+    assert_eq!(ProjectileKind::Snowball.network_entity_type(), 81);
+    assert_eq!(ProjectileKind::Egg.network_entity_type(), 82);
+    assert_eq!(ProjectileKind::Arrow.network_entity_type(), 80);
+    assert_eq!(ProjectileKind::ExpBottle.network_entity_type(), 68);
+
+    assert!((ProjectileKind::EnderPearl.gravity() - 0.03).abs() < 1e-6);
+    assert!((ProjectileKind::Arrow.gravity() - 0.05).abs() < 1e-6);
+    assert!((ProjectileKind::EnderPearl.drag() - 0.01).abs() < 1e-6);
+}
+
+#[tokio::test]
+async fn test_liquid_simulation_spread() {
+    use oxide::level::{World, LiquidSimulation};
+    use oxide::raknet::RakNetServer;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use std::collections::HashMap;
+
+    let world = Arc::new(RwLock::new(World::new()));
+    // Set up world blocks: air at (5, 5, 5), air below at (5, 4, 5)
+    {
+        let mut w = world.write();
+        w.set_block(5, 5, 5, 8, 0); // Water source
+        w.set_block(5, 4, 5, 0, 0); // Air below
+    }
+
+    let liquid = LiquidSimulation::new();
+    liquid.schedule_update(5, 5, 5);
+
+    let rak = Arc::new(RakNetServer::new("127.0.0.1:0".parse().unwrap(), "Oxide".to_string()).await.unwrap());
+    let players = Arc::new(RwLock::new(HashMap::new()));
+
+    liquid.tick(&world, &rak, &players).await;
+
+    // Water should flow down into (5, 4, 5)
+    let below_id = {
+        let mut w = world.write();
+        w.get_block_id(5, 4, 5)
+    };
+    assert_eq!(below_id, 8, "Water should flow downward into empty air block");
+}

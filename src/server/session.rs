@@ -27,6 +27,8 @@ pub struct OxideServer {
     pub scheduler: Arc<crate::scheduler::Scheduler>,
     pub plugin_manager: Arc<crate::plugin::PluginManager>,
     pub permission_manager: Arc<crate::permission::PermissionManager>,
+    pub projectile_manager: Arc<crate::entity::ProjectileManager>,
+    pub liquid_sim: Arc<crate::level::LiquidSimulation>,
     pub next_entity_id: Arc<RwLock<i64>>,
 }
 
@@ -77,6 +79,8 @@ impl OxideServer {
             scheduler,
             plugin_manager,
             permission_manager,
+            projectile_manager: Arc::new(crate::entity::ProjectileManager::new()),
+            liquid_sim: Arc::new(crate::level::LiquidSimulation::new()),
             next_entity_id: Arc::new(RwLock::new(1)),
         })
     }
@@ -90,6 +94,9 @@ impl OxideServer {
             world: self.world.clone(),
             players: self.players.clone(),
             scheduler: self.scheduler.clone(),
+            projectile_manager: self.projectile_manager.clone(),
+            liquid_sim: self.liquid_sim.clone(),
+            next_entity_id: self.next_entity_id.clone(),
         };
         tokio::spawn(async move {
             tick_loop(tick_handles).await;
@@ -255,6 +262,9 @@ struct TickHandles {
     world: Arc<RwLock<World>>,
     players: Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     scheduler: Arc<crate::scheduler::Scheduler>,
+    projectile_manager: Arc<crate::entity::ProjectileManager>,
+    liquid_sim: Arc<crate::level::LiquidSimulation>,
+    next_entity_id: Arc<RwLock<i64>>,
 }
 
 async fn tick_loop(h: TickHandles) {
@@ -271,6 +281,19 @@ async fn tick_loop(h: TickHandles) {
             world.tick();
         }
 
+        // Ticking projectiles (every tick)
+        h.projectile_manager.tick(&h.world, &h.players, &h.rak, &h.next_entity_id).await;
+
+        // Ticking liquid physics (every 5 ticks = 4 updates/sec)
+        if tick_counter % 5 == 0 {
+            h.liquid_sim.tick(&h.world, &h.rak, &h.players).await;
+        }
+
+        // Environment hazards (void, lava) every 10 ticks (0.5 sec)
+        if tick_counter % 10 == 0 {
+            check_environment_hazards(&h.world, &h.players, &h.rak).await;
+        }
+
         if tick_counter % 40 == 0 {
             let time = { h.world.read().time };
             let pk = SetTimePacket::new(time);
@@ -279,6 +302,113 @@ async fn tick_loop(h: TickHandles) {
 
         if tick_counter % 4 == 0 {
             broadcast_player_positions(&h.rak, &h.players).await;
+        }
+    }
+}
+
+async fn check_environment_hazards(
+    world: &Arc<RwLock<World>>,
+    players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
+    rak: &RakNetServer,
+) {
+    let list: Vec<(SocketAddr, i64, f64, f64, f64, u32, i32, String)> = {
+        let guard = players.read();
+        guard.iter().map(|(a, s)| (*a, s.entity_id, s.x, s.y, s.z, s.health, s.gamemode, s.username.clone())).collect()
+    };
+
+    for (addr, eid, px, py, pz, health, gamemode, username) in list {
+        if gamemode != 0 {
+            continue; // Survival only
+        }
+
+        // 1. Void check
+        if py < -30.0 {
+            let new_hp = health.saturating_sub(4);
+            {
+                let mut guard = players.write();
+                if let Some(s) = guard.get_mut(&addr) {
+                    s.health = new_hp;
+                }
+            }
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            send_packet(rak, addr, hp_pk.encode()).await;
+
+            if new_hp == 0 {
+                let (sx, sy, sz) = {
+                    let w = world.read();
+                    (w.spawn_x, w.spawn_y, w.spawn_z)
+                };
+                {
+                    let mut guard = players.write();
+                    if let Some(s) = guard.get_mut(&addr) {
+                        s.health = 20;
+                        s.x = sx as f64;
+                        s.y = sy as f64;
+                        s.z = sz as f64;
+                    }
+                }
+                let respawn_pk = RespawnPacket::new(sx as f32, sy as f32, sz as f32);
+                send_packet(rak, addr, respawn_pk.encode()).await;
+
+                let reset_hp = SetHealthPacket::new(20);
+                send_packet(rak, addr, reset_hp.encode()).await;
+
+                let text = TextPacket::system(format!("{} fell out of the world", username));
+                broadcast_except(rak, players, None, text.encode()).await;
+            }
+            continue;
+        }
+
+        // 2. Lava check
+        let block_at_feet = {
+            let mut w = world.write();
+            w.get_block_id(px.floor() as i32, py.floor() as i32, pz.floor() as i32)
+        };
+        let block_at_body = {
+            let mut w = world.write();
+            w.get_block_id(px.floor() as i32, (py + 1.0).floor() as i32, pz.floor() as i32)
+        };
+
+        if block_at_feet == 10 || block_at_feet == 11 || block_at_body == 10 || block_at_body == 11 {
+            let new_hp = health.saturating_sub(4);
+            {
+                let mut guard = players.write();
+                if let Some(s) = guard.get_mut(&addr) {
+                    s.health = new_hp;
+                }
+            }
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            send_packet(rak, addr, hp_pk.encode()).await;
+
+            let hurt_sound = LevelSoundEventPacket::new(level_event::SOUND_HURT, px as f32, py as f32, pz as f32);
+            broadcast_except(rak, players, None, hurt_sound.encode()).await;
+
+            let anim = AnimatePacket::new(1, eid);
+            broadcast_except(rak, players, None, anim.encode()).await;
+
+            if new_hp == 0 {
+                let (sx, sy, sz) = {
+                    let w = world.read();
+                    (w.spawn_x, w.spawn_y, w.spawn_z)
+                };
+                {
+                    let mut guard = players.write();
+                    if let Some(s) = guard.get_mut(&addr) {
+                        s.health = 20;
+                        s.x = sx as f64;
+                        s.y = sy as f64;
+                        s.z = sz as f64;
+                    }
+                }
+                let respawn_pk = RespawnPacket::new(sx as f32, sy as f32, sz as f32);
+                send_packet(rak, addr, respawn_pk.encode()).await;
+
+                let reset_hp = SetHealthPacket::new(20);
+                send_packet(rak, addr, reset_hp.encode()).await;
+
+                let text = TextPacket::system(format!("{} tried to swim in lava", username));
+                broadcast_except(rak, players, None, text.encode()).await;
+            }
         }
     }
 }
@@ -322,6 +452,7 @@ fn clone_state(s: &PlayerState) -> PlayerState {
         x: s.x, y: s.y, z: s.z,
         yaw: s.yaw, pitch: s.pitch,
         on_ground: s.on_ground,
+        fall_distance: s.fall_distance,
         gamemode: s.gamemode,
         health: s.health,
         metadata: s.metadata.clone(),
@@ -609,14 +740,32 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
         }
         IncomingPacket::MovePlayer(mv) => {
             let mut chunk_to_load = None;
+            let mut fall_damage = 0;
+            let mut eid = 0;
+            let mut cur_hp = 20;
             if let Some(state) = self_data.players.write().get_mut(&addr) {
                 let old_cx = (state.x as i32) >> 4;
                 let old_cz = (state.z as i32) >> 4;
+                let old_y = state.y;
+                eid = state.entity_id;
+
                 state.x = mv.x as f64;
                 state.y = (mv.y - 1.62) as f64;
                 state.z = mv.z as f64;
                 state.yaw = mv.yaw;
                 state.pitch = mv.pitch;
+
+                if mv.on_ground {
+                    if state.fall_distance > 3.0 && state.gamemode == 0 {
+                        fall_damage = (state.fall_distance - 3.0).floor() as u32;
+                        state.health = state.health.saturating_sub(fall_damage);
+                        cur_hp = state.health;
+                    }
+                    state.fall_distance = 0.0;
+                } else if state.y < old_y {
+                    state.fall_distance += (old_y - state.y) as f32;
+                }
+
                 state.on_ground = mv.on_ground;
                 let new_cx = (state.x as i32) >> 4;
                 let new_cz = (state.z as i32) >> 4;
@@ -624,6 +773,19 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     chunk_to_load = Some((state.x as i32, state.z as i32, state.chunk_radius));
                 }
             }
+
+            if fall_damage > 0 {
+                let hp_pk = SetHealthPacket::new(cur_hp as i32);
+                send_packet(&self_data.rak, addr, hp_pk.encode()).await;
+
+                let sound_id = if fall_damage > 4 { level_event::SOUND_FALL_BIG } else { level_event::SOUND_FALL_SMALL };
+                let fall_sound = LevelSoundEventPacket::new(sound_id, mv.x, mv.y, mv.z);
+                broadcast_except(&self_data.rak, &self_data.players, None, fall_sound.encode()).await;
+
+                let anim = AnimatePacket::new(1, eid);
+                broadcast_except(&self_data.rak, &self_data.players, None, anim.encode()).await;
+            }
+
             if let Some((px, pz, radius)) = chunk_to_load {
                 let server_clone = self_data.clone();
                 tokio::spawn(async move {
@@ -662,12 +824,35 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
             handle_break_block(self_data, addr, rb.x, rb.y as i32, rb.z).await;
         }
         IncomingPacket::PlayerAction(action) => {
-            if action.action == player_action::ACTION_STOP_BREAK {
-                handle_break_block(self_data, addr, action.x, action.y as i32, action.z).await;
+            match action.action {
+                player_action::ACTION_START_BREAK => {
+                    let punch_pk = LevelEventPacket::new(
+                        level_event::EVENT_PARTICLE_PUNCH_BLOCK,
+                        action.x as f32 + 0.5,
+                        action.y as f32 + 0.5,
+                        action.z as f32 + 0.5,
+                        action.face,
+                    );
+                    broadcast_except(&self_data.rak, &self_data.players, Some(addr), punch_pk.encode()).await;
+                }
+                player_action::ACTION_ABORT_BREAK => {
+                    let stop_pk = LevelEventPacket::new(
+                        level_event::EVENT_BLOCK_STOP_BREAK,
+                        action.x as f32 + 0.5,
+                        action.y as f32 + 0.5,
+                        action.z as f32 + 0.5,
+                        0,
+                    );
+                    broadcast_except(&self_data.rak, &self_data.players, Some(addr), stop_pk.encode()).await;
+                }
+                player_action::ACTION_STOP_BREAK => {
+                    handle_break_block(self_data, addr, action.x, action.y as i32, action.z).await;
+                }
+                _ => {}
             }
         }
         IncomingPacket::UseItem(ui) => {
-            handle_place_block(self_data, addr, ui.x, ui.y as i32, ui.z, ui.face, ui.item.id).await;
+            handle_use_item(self_data, addr, ui).await;
         }
         IncomingPacket::Interact(_) => {}
         IncomingPacket::MobEquipment(me) => {
@@ -842,6 +1027,63 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     let pk = UpdateBlockPacket::new(x, y as u32, z, 0, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
 
+    // Block break particle effect
+    let destroy_pk = LevelEventPacket::new(
+        level_event::EVENT_PARTICLE_DESTROY,
+        x as f32 + 0.5,
+        y as f32 + 0.5,
+        z as f32 + 0.5,
+        old_id as i32,
+    );
+    broadcast_except(&self_data.rak, &self_data.players, None, destroy_pk.encode()).await;
+
+    // Block break sound
+    let break_sound = LevelSoundEventPacket::new(
+        level_event::SOUND_BREAK,
+        x as f32 + 0.5,
+        y as f32 + 0.5,
+        z as f32 + 0.5,
+    );
+    broadcast_except(&self_data.rak, &self_data.players, None, break_sound.encode()).await;
+
+    // Gravity check for sand (12) and gravel (13) directly above
+    if y + 1 < 256 {
+        let above_id = {
+            let mut world = self_data.world.write();
+            world.get_block_id(x, y + 1, z)
+        };
+        if above_id == 12 || above_id == 13 {
+            let mut fall_y = y;
+            {
+                let mut world = self_data.world.write();
+                while fall_y > 0 && world.get_block_id(x, fall_y - 1, z) == 0 {
+                    fall_y -= 1;
+                }
+                world.set_block(x, y + 1, z, 0, 0);
+                world.set_block(x, fall_y, z, above_id, 0);
+            }
+            let clear_pk = UpdateBlockPacket::new(x, (y + 1) as u32, z, 0, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, clear_pk.encode()).await;
+
+            let place_pk = UpdateBlockPacket::new(x, fall_y as u32, z, above_id as u32, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, place_pk.encode()).await;
+        }
+    }
+
+    // Schedule liquid updates for neighboring liquids
+    let neighbors = [(x - 1, y, z), (x + 1, y, z), (x, y - 1, z), (x, y + 1, z), (x, y, z - 1), (x, y, z + 1)];
+    for (nx, ny, nz) in neighbors {
+        if ny >= 0 && ny < 256 {
+            let nid = {
+                let mut world = self_data.world.write();
+                world.get_block_id(nx, ny, nz)
+            };
+            if nid == 8 || nid == 9 || nid == 10 || nid == 11 {
+                self_data.liquid_sim.schedule_update(nx, ny, nz);
+            }
+        }
+    }
+
     // Spawn block drop item entity if survival
     let is_survival = self_data.players.read().get(&addr).map(|s| s.gamemode == 0).unwrap_or(true);
     if is_survival {
@@ -871,6 +1113,302 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
         drop_pk.speed_y = speed_y;
         drop_pk.speed_z = speed_z;
         broadcast_except(&self_data.rak, &self_data.players, None, drop_pk.encode()).await;
+    }
+}
+
+async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemPacket) {
+    let player_info = self_data.players.read().get(&addr).map(|s| {
+        (s.x, s.y, s.z, s.yaw, s.pitch, s.entity_id, s.gamemode == 0, s.health, s.inventory.held_index())
+    });
+    let (px, py, pz, yaw, pitch, eid, is_survival, cur_health, held_slot) = match player_info {
+        Some(info) => info,
+        None => return,
+    };
+
+    let item_id = ui.item.id;
+
+    // 1. Projectiles: Ender Pearl (368), Snowball (332), Egg (344), Bow (261), Exp Bottle (384)
+    let projectile_kind = match item_id {
+        368 => Some((crate::entity::ProjectileKind::EnderPearl, 1.5)),
+        332 => Some((crate::entity::ProjectileKind::Snowball, 1.5)),
+        344 => Some((crate::entity::ProjectileKind::Egg, 1.5)),
+        261 => Some((crate::entity::ProjectileKind::Arrow, 2.0)),
+        384 => Some((crate::entity::ProjectileKind::ExpBottle, 0.7)),
+        _ => None,
+    };
+
+    if let Some((kind, force)) = projectile_kind {
+        let proj_eid = {
+            let mut guard = self_data.next_entity_id.write();
+            let id = *guard;
+            *guard += 1;
+            id
+        };
+
+        self_data.projectile_manager.launch(
+            proj_eid,
+            kind,
+            addr,
+            eid,
+            px,
+            py,
+            pz,
+            yaw,
+            pitch,
+            force,
+            &self_data.rak,
+            &self_data.players,
+        );
+
+        if is_survival {
+            let updated = {
+                let mut players = self_data.players.write();
+                if let Some(s) = players.get_mut(&addr) {
+                    let mut it = s.inventory.get_item(held_slot);
+                    if it.count > 1 {
+                        it.count -= 1;
+                        s.inventory.set_item(held_slot, it.clone());
+                        it
+                    } else {
+                        let air = crate::protocol::types::Item::air();
+                        s.inventory.set_item(held_slot, air.clone());
+                        air
+                    }
+                } else {
+                    crate::protocol::types::Item::air()
+                }
+            };
+            let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, updated);
+            send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+        }
+        return;
+    }
+
+    // 2. Food items
+    let food_heal = match item_id {
+        260 => Some(4),  // Apple
+        297 => Some(5),  // Bread
+        319 => Some(3),  // Raw Porkchop
+        320 => Some(8),  // Cooked Porkchop
+        322 => Some(20), // Golden Apple
+        363 => Some(3),  // Raw Beef
+        364 => Some(8),  // Steak
+        365 => Some(2),  // Raw Chicken
+        366 => Some(6),  // Cooked Chicken
+        391 => Some(1),  // Potato
+        393 => Some(5),  // Baked Potato
+        396 => Some(6),  // Golden Carrot
+        411 => Some(2),  // Raw Mutton
+        412 => Some(6),  // Cooked Mutton
+        _ => None,
+    };
+
+    if let Some(heal_amount) = food_heal {
+        if cur_health < 20 || item_id == 322 {
+            let new_health = (cur_health + heal_amount).min(20);
+            {
+                let mut players = self_data.players.write();
+                if let Some(s) = players.get_mut(&addr) {
+                    s.health = new_health;
+                }
+            }
+            let hp_pk = SetHealthPacket::new(new_health as i32);
+            send_packet(&self_data.rak, addr, hp_pk.encode()).await;
+
+            let eat_sound = LevelSoundEventPacket::new(level_event::SOUND_EAT, px as f32, py as f32, pz as f32);
+            broadcast_except(&self_data.rak, &self_data.players, None, eat_sound.encode()).await;
+
+            if is_survival {
+                let updated = {
+                    let mut players = self_data.players.write();
+                    if let Some(s) = players.get_mut(&addr) {
+                        let mut it = s.inventory.get_item(held_slot);
+                        if it.count > 1 {
+                            it.count -= 1;
+                            s.inventory.set_item(held_slot, it.clone());
+                            it
+                        } else {
+                            let air = crate::protocol::types::Item::air();
+                            s.inventory.set_item(held_slot, air.clone());
+                            air
+                        }
+                    } else {
+                        crate::protocol::types::Item::air()
+                    }
+                };
+                let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, updated);
+                send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+            }
+            return;
+        }
+    }
+
+    // 3. Bucket handling: Water Bucket (326), Lava Bucket (327), Empty Bucket (325)
+    if item_id == 326 || item_id == 327 || item_id == 325 {
+        if ui.face >= 0 && ui.face <= 5 {
+            let (nx, ny, nz) = match ui.face {
+                0 => (ui.x, ui.y as i32 - 1, ui.z),
+                1 => (ui.x, ui.y as i32 + 1, ui.z),
+                2 => (ui.x, ui.y as i32, ui.z - 1),
+                3 => (ui.x, ui.y as i32, ui.z + 1),
+                4 => (ui.x - 1, ui.y as i32, ui.z),
+                5 => (ui.x + 1, ui.y as i32, ui.z),
+                _ => (ui.x, ui.y as i32 + 1, ui.z),
+            };
+
+            if item_id == 326 {
+                {
+                    let mut w = self_data.world.write();
+                    w.set_block(nx, ny, nz, 8, 0);
+                }
+                let pk = UpdateBlockPacket::new(nx, ny as u32, nz, 8, 0, update_block::FLAG_ALL);
+                broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+                self_data.liquid_sim.schedule_update(nx, ny, nz);
+
+                let sound = LevelSoundEventPacket::new(level_event::SOUND_BUCKET_EMPTY_WATER, nx as f32 + 0.5, ny as f32 + 0.5, nz as f32 + 0.5);
+                broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+
+                if is_survival {
+                    let empty_bucket = crate::protocol::types::Item::new(325, 0, 1);
+                    {
+                        let mut players = self_data.players.write();
+                        if let Some(s) = players.get_mut(&addr) {
+                            s.inventory.set_item(held_slot, empty_bucket.clone());
+                        }
+                    }
+                    let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, empty_bucket);
+                    send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+                }
+                return;
+            } else if item_id == 327 {
+                {
+                    let mut w = self_data.world.write();
+                    w.set_block(nx, ny, nz, 10, 0);
+                }
+                let pk = UpdateBlockPacket::new(nx, ny as u32, nz, 10, 0, update_block::FLAG_ALL);
+                broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+                self_data.liquid_sim.schedule_update(nx, ny, nz);
+
+                let sound = LevelSoundEventPacket::new(level_event::SOUND_BUCKET_EMPTY_LAVA, nx as f32 + 0.5, ny as f32 + 0.5, nz as f32 + 0.5);
+                broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+
+                if is_survival {
+                    let empty_bucket = crate::protocol::types::Item::new(325, 0, 1);
+                    {
+                        let mut players = self_data.players.write();
+                        if let Some(s) = players.get_mut(&addr) {
+                            s.inventory.set_item(held_slot, empty_bucket.clone());
+                        }
+                    }
+                    let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, empty_bucket);
+                    send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+                }
+                return;
+            } else if item_id == 325 {
+                let target_id = {
+                    let mut w = self_data.world.write();
+                    w.get_block_id(ui.x, ui.y as i32, ui.z)
+                };
+                if target_id == 8 || target_id == 9 {
+                    {
+                        let mut w = self_data.world.write();
+                        w.set_block(ui.x, ui.y as i32, ui.z, 0, 0);
+                    }
+                    let pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, 0, 0, update_block::FLAG_ALL);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+
+                    let sound = LevelSoundEventPacket::new(level_event::SOUND_BUCKET_FILL_WATER, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
+                    broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+
+                    if is_survival {
+                        let water_bucket = crate::protocol::types::Item::new(326, 0, 1);
+                        {
+                            let mut players = self_data.players.write();
+                            if let Some(s) = players.get_mut(&addr) {
+                                s.inventory.set_item(held_slot, water_bucket.clone());
+                            }
+                        }
+                        let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, water_bucket);
+                        send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+                    }
+                    return;
+                } else if target_id == 10 || target_id == 11 {
+                    {
+                        let mut w = self_data.world.write();
+                        w.set_block(ui.x, ui.y as i32, ui.z, 0, 0);
+                    }
+                    let pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, 0, 0, update_block::FLAG_ALL);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+
+                    let sound = LevelSoundEventPacket::new(level_event::SOUND_BUCKET_FILL_LAVA, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
+                    broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+
+                    if is_survival {
+                        let lava_bucket = crate::protocol::types::Item::new(327, 0, 1);
+                        {
+                            let mut players = self_data.players.write();
+                            if let Some(s) = players.get_mut(&addr) {
+                                s.inventory.set_item(held_slot, lava_bucket.clone());
+                            }
+                        }
+                        let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, lava_bucket);
+                        send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    // 4. Doors (64, 71), Trapdoors (96), Gates (107) toggle
+    if ui.face >= 0 && ui.face <= 5 {
+        let (target_id, target_meta) = {
+            let mut w = self_data.world.write();
+            let id = w.get_block_id(ui.x, ui.y as i32, ui.z);
+            let chunk_x = ui.x >> 4;
+            let chunk_z = ui.z >> 4;
+            let cx = (ui.x & 0x0f) as usize;
+            let cz = (ui.z & 0x0f) as usize;
+            let chunk = w.get_chunk_or_generate(chunk_x, chunk_z);
+            let meta = chunk.get_block_data(cx, ui.y as usize, cz);
+            (id, meta)
+        };
+
+        if target_id == 64 || target_id == 71 || target_id == 96 || target_id == 107 {
+            let new_meta = target_meta ^ 0x04;
+            {
+                let mut w = self_data.world.write();
+                w.set_block(ui.x, ui.y as i32, ui.z, target_id, new_meta);
+            }
+            let pk = UpdateBlockPacket::new(ui.x, ui.y, ui.z, target_id as u32, new_meta as u32, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+
+            let door_sound = LevelEventPacket::new(
+                level_event::EVENT_SOUND_DOOR,
+                ui.x as f32 + 0.5,
+                ui.y as f32 + 0.5,
+                ui.z as f32 + 0.5,
+                0,
+            );
+            broadcast_except(&self_data.rak, &self_data.players, None, door_sound.encode()).await;
+            return;
+        }
+
+        if target_id == 54 {
+            let chest_sound = LevelSoundEventPacket::new(
+                level_event::SOUND_CHEST_OPEN,
+                ui.x as f32 + 0.5,
+                ui.y as f32 + 0.5,
+                ui.z as f32 + 0.5,
+            );
+            broadcast_except(&self_data.rak, &self_data.players, None, chest_sound.encode()).await;
+            return;
+        }
+    }
+
+    // 5. Normal block placement
+    if ui.face >= 0 && ui.face <= 5 {
+        handle_place_block(self_data, addr, ui.x, ui.y as i32, ui.z, ui.face, ui.item.id).await;
     }
 }
 
@@ -947,6 +1485,44 @@ async fn handle_place_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     }
     let pk = UpdateBlockPacket::new(nx, ny as u32, nz, item_id as u32, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+
+    // Block place sound
+    let place_sound = LevelSoundEventPacket::new(
+        level_event::SOUND_PLACE,
+        nx as f32 + 0.5,
+        ny as f32 + 0.5,
+        nz as f32 + 0.5,
+    );
+    broadcast_except(&self_data.rak, &self_data.players, None, place_sound.encode()).await;
+
+    // Gravity for sand and gravel
+    if item_id == 12 || item_id == 13 {
+        let below_id = {
+            let mut world = self_data.world.write();
+            if ny > 0 { world.get_block_id(nx, ny - 1, nz) } else { 7 }
+        };
+        if below_id == 0 {
+            let mut fall_y = ny - 1;
+            {
+                let mut world = self_data.world.write();
+                while fall_y > 0 && world.get_block_id(nx, fall_y - 1, nz) == 0 {
+                    fall_y -= 1;
+                }
+                world.set_block(nx, ny, nz, 0, 0);
+                world.set_block(nx, fall_y, nz, item_id as u8, 0);
+            }
+            let clear_pk = UpdateBlockPacket::new(nx, ny as u32, nz, 0, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, clear_pk.encode()).await;
+
+            let place_pk = UpdateBlockPacket::new(nx, fall_y as u32, nz, item_id as u32, 0, update_block::FLAG_ALL);
+            broadcast_except(&self_data.rak, &self_data.players, None, place_pk.encode()).await;
+        }
+    }
+
+    // Schedule liquid update if water or lava placed
+    if item_id == 8 || item_id == 9 || item_id == 10 || item_id == 11 {
+        self_data.liquid_sim.schedule_update(nx, ny, nz);
+    }
 
     if is_survival {
         let updated_item = {
@@ -1137,6 +1713,8 @@ impl Clone for OxideServer {
             scheduler: self.scheduler.clone(),
             plugin_manager: self.plugin_manager.clone(),
             permission_manager: self.permission_manager.clone(),
+            projectile_manager: self.projectile_manager.clone(),
+            liquid_sim: self.liquid_sim.clone(),
             next_entity_id: self.next_entity_id.clone(),
         }
     }
