@@ -17,6 +17,8 @@ use crate::utils::{Config, UUID};
 pub struct OxideServer {
     pub rak: Arc<RakNetServer>,
     pub world: Arc<RwLock<World>>,
+    pub nether_world: Arc<RwLock<World>>,
+    pub end_world: Arc<RwLock<World>>,
     pub players: Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     pub config: Arc<RwLock<Config>>,
     pub command_manager: Arc<crate::command::CommandManager>,
@@ -64,6 +66,8 @@ impl OxideServer {
         let level_type = config.get_string("level_type");
         let level_seed = config.get_int("level_seed") as u64;
         let world = World::with_generator(&level_type, level_seed);
+        let nether_world = World::with_generator("hell", level_seed.wrapping_add(100));
+        let end_world = World::with_generator("ender", level_seed.wrapping_add(200));
 
         let block_registry = Arc::new(crate::block::BlockRegistry::default());
         let item_registry = Arc::new(crate::item::ItemRegistry::default());
@@ -77,6 +81,8 @@ impl OxideServer {
         Ok(Self {
             rak,
             world: Arc::new(RwLock::new(world)),
+            nether_world: Arc::new(RwLock::new(nether_world)),
+            end_world: Arc::new(RwLock::new(end_world)),
             players: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(RwLock::new(config)),
             command_manager: Arc::new(crate::command::CommandManager::new()),
@@ -107,6 +113,8 @@ impl OxideServer {
         let tick_handles = TickHandles {
             rak: self.rak.clone(),
             world: self.world.clone(),
+            nether_world: self.nether_world.clone(),
+            end_world: self.end_world.clone(),
             players: self.players.clone(),
             scheduler: self.scheduler.clone(),
             projectile_manager: self.projectile_manager.clone(),
@@ -275,11 +283,303 @@ impl OxideServer {
         }
         None
     }
+
+    pub fn get_world(&self, dimension: i32) -> Arc<RwLock<World>> {
+        match dimension {
+            1 => self.nether_world.clone(),
+            2 => self.end_world.clone(),
+            _ => self.world.clone(),
+        }
+    }
+
+    pub async fn change_player_dimension(
+        &self,
+        addr: SocketAddr,
+        new_dim: i32,
+        target_x: f64,
+        target_y: f64,
+        target_z: f64,
+    ) {
+        change_player_dimension_raw(
+            &self.rak,
+            &self.players,
+            &self.world,
+            &self.nether_world,
+            &self.end_world,
+            addr,
+            new_dim,
+            target_x,
+            target_y,
+            target_z,
+        ).await;
+    }
+}
+
+async fn change_player_dimension_raw(
+    rak: &RakNetServer,
+    players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
+    world: &Arc<RwLock<World>>,
+    nether_world: &Arc<RwLock<World>>,
+    end_world: &Arc<RwLock<World>>,
+    addr: SocketAddr,
+    new_dim: i32,
+    target_x: f64,
+    target_y: f64,
+    target_z: f64,
+) {
+    let eid = {
+        let mut p = players.write();
+        let Some(s) = p.get_mut(&addr) else { return; };
+        s.dimension = new_dim;
+        s.sent_chunks.clear();
+        s.x = target_x;
+        s.y = target_y;
+        s.z = target_z;
+        s.portal_ticks = 100;
+        s.entity_id
+    };
+
+    let change_dim_pk = crate::protocol::packets::ChangeDimensionPacket::new(
+        new_dim,
+        target_x as f32,
+        target_y as f32,
+        target_z as f32,
+    );
+    send_packet(rak, addr, change_dim_pk.encode()).await;
+
+    let play_status = crate::protocol::packets::PlayStatusPacket::new(
+        crate::protocol::packets::play_status::PLAYER_SPAWN,
+    );
+    send_packet(rak, addr, play_status.encode()).await;
+
+    let wanted = {
+        let center_cx = (target_x as i32) >> 4;
+        let center_cz = (target_z as i32) >> 4;
+        let mut list = Vec::new();
+        let mut p = players.write();
+        if let Some(s) = p.get_mut(&addr) {
+            for dx in -DEFAULT_VIEW_DISTANCE..=DEFAULT_VIEW_DISTANCE {
+                for dz in -DEFAULT_VIEW_DISTANCE..=DEFAULT_VIEW_DISTANCE {
+                    let coord = (center_cx + dx, center_cz + dz);
+                    if s.sent_chunks.insert(coord) {
+                        list.push(coord);
+                    }
+                }
+            }
+        }
+        list
+    };
+
+    let chunks: Vec<Vec<u8>> = {
+        let target_world = match new_dim {
+            1 => nether_world,
+            2 => end_world,
+            _ => world,
+        };
+        let mut w = target_world.write();
+        wanted.iter()
+            .map(|&(x, z)| FullChunkDataPacket::new(x, z, w.serialize_chunk(x, z)).encode())
+            .collect()
+    };
+
+    for pk in chunks {
+        send_raw(rak, addr, BatchPacket::encode(&[pk])).await;
+    }
+
+    let mut mv = crate::protocol::packets::MovePlayerPacket::new(
+        eid,
+        target_x as f32,
+        target_y as f32 + 1.62,
+        target_z as f32,
+        0.0,
+        0.0,
+    );
+    mv.mode = crate::protocol::packets::move_player::MODE_RESET;
+    send_packet(rak, addr, mv.encode()).await;
+}
+
+fn try_ignite_nether_portal(world: &mut World, click_x: i32, click_y: i32, click_z: i32) -> Option<Vec<(i32, i32, i32)>> {
+    let start_y = click_y + 1;
+
+    if let Some(blocks) = check_portal_frame_x(world, click_x, start_y, click_z) {
+        for &(bx, by, bz) in &blocks {
+            world.set_block(bx, by, bz, 90, 1);
+        }
+        return Some(blocks);
+    }
+
+    if let Some(blocks) = check_portal_frame_z(world, click_x, start_y, click_z) {
+        for &(bx, by, bz) in &blocks {
+            world.set_block(bx, by, bz, 90, 2);
+        }
+        return Some(blocks);
+    }
+
+    None
+}
+
+fn check_portal_frame_x(world: &mut World, start_x: i32, start_y: i32, z: i32) -> Option<Vec<(i32, i32, i32)>> {
+    let mut min_x = start_x;
+    while min_x >= start_x - 10 && world.get_block_id(min_x, start_y - 1, z) == 49 {
+        if world.get_block_id(min_x, start_y, z) == 49 {
+            break;
+        }
+        min_x -= 1;
+    }
+    let left_pillar_x = min_x;
+    if world.get_block_id(left_pillar_x, start_y, z) != 49 {
+        return None;
+    }
+
+    let mut max_x = start_x;
+    while max_x <= start_x + 10 && world.get_block_id(max_x, start_y - 1, z) == 49 {
+        if world.get_block_id(max_x, start_y, z) == 49 {
+            break;
+        }
+        max_x += 1;
+    }
+    let right_pillar_x = max_x;
+    if world.get_block_id(right_pillar_x, start_y, z) != 49 {
+        return None;
+    }
+
+    let inner_width = right_pillar_x - left_pillar_x - 1;
+    if inner_width < 2 || inner_width > 21 {
+        return None;
+    }
+
+    let mut top_y = start_y;
+    while top_y <= start_y + 21 {
+        let b = world.get_block_id(left_pillar_x + 1, top_y, z);
+        if b == 49 {
+            break;
+        }
+        top_y += 1;
+    }
+    let inner_height = top_y - start_y;
+    if inner_height < 3 || inner_height > 21 {
+        return None;
+    }
+
+    for x in (left_pillar_x + 1)..right_pillar_x {
+        if world.get_block_id(x, start_y - 1, z) != 49 || world.get_block_id(x, top_y, z) != 49 {
+            return None;
+        }
+    }
+
+    for y in start_y..top_y {
+        if world.get_block_id(left_pillar_x, y, z) != 49 || world.get_block_id(right_pillar_x, y, z) != 49 {
+            return None;
+        }
+    }
+
+    let mut portal_blocks = Vec::new();
+    for x in (left_pillar_x + 1)..right_pillar_x {
+        for y in start_y..top_y {
+            let id = world.get_block_id(x, y, z);
+            if id != 0 && id != 51 {
+                return None;
+            }
+            portal_blocks.push((x, y, z));
+        }
+    }
+
+    Some(portal_blocks)
+}
+
+fn check_portal_frame_z(world: &mut World, x: i32, start_y: i32, start_z: i32) -> Option<Vec<(i32, i32, i32)>> {
+    let mut min_z = start_z;
+    while min_z >= start_z - 10 && world.get_block_id(x, start_y - 1, min_z) == 49 {
+        if world.get_block_id(x, start_y, min_z) == 49 {
+            break;
+        }
+        min_z -= 1;
+    }
+    let left_pillar_z = min_z;
+    if world.get_block_id(x, start_y, left_pillar_z) != 49 {
+        return None;
+    }
+
+    let mut max_z = start_z;
+    while max_z <= start_z + 10 && world.get_block_id(x, start_y - 1, max_z) == 49 {
+        if world.get_block_id(x, start_y, max_z) == 49 {
+            break;
+        }
+        max_z += 1;
+    }
+    let right_pillar_z = max_z;
+    if world.get_block_id(x, start_y, right_pillar_z) != 49 {
+        return None;
+    }
+
+    let inner_width = right_pillar_z - left_pillar_z - 1;
+    if inner_width < 2 || inner_width > 21 {
+        return None;
+    }
+
+    let mut top_y = start_y;
+    while top_y <= start_y + 21 {
+        let b = world.get_block_id(x, top_y, left_pillar_z + 1);
+        if b == 49 {
+            break;
+        }
+        top_y += 1;
+    }
+    let inner_height = top_y - start_y;
+    if inner_height < 3 || inner_height > 21 {
+        return None;
+    }
+
+    for z in (left_pillar_z + 1)..right_pillar_z {
+        if world.get_block_id(x, start_y - 1, z) != 49 || world.get_block_id(x, top_y, z) != 49 {
+            return None;
+        }
+    }
+
+    for y in start_y..top_y {
+        if world.get_block_id(x, y, left_pillar_z) != 49 || world.get_block_id(x, y, right_pillar_z) != 49 {
+            return None;
+        }
+    }
+
+    let mut portal_blocks = Vec::new();
+    for z in (left_pillar_z + 1)..right_pillar_z {
+        for y in start_y..top_y {
+            let id = world.get_block_id(x, y, z);
+            if id != 0 && id != 51 {
+                return None;
+            }
+            portal_blocks.push((x, y, z));
+        }
+    }
+
+    Some(portal_blocks)
+}
+
+fn build_destination_portal(world: &mut World, x: i32, y: i32, z: i32) {
+    for dx in -1..=2 {
+        world.set_block(x + dx, y, z, 49, 0);
+        world.set_block(x + dx, y + 4, z, 49, 0);
+    }
+    for dy in 1..=3 {
+        world.set_block(x - 1, y + dy, z, 49, 0);
+        world.set_block(x + 2, y + dy, z, 49, 0);
+        world.set_block(x, y + dy, z, 90, 1);
+        world.set_block(x + 1, y + dy, z, 90, 1);
+    }
+    for dx in -1..=2 {
+        for dy in 1..=4 {
+            world.set_block(x + dx, y + dy, z - 1, 0, 0);
+            world.set_block(x + dx, y + dy, z + 1, 0, 0);
+        }
+    }
 }
 
 struct TickHandles {
     rak: Arc<RakNetServer>,
     world: Arc<RwLock<World>>,
+    nether_world: Arc<RwLock<World>>,
+    end_world: Arc<RwLock<World>>,
     players: Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     scheduler: Arc<crate::scheduler::Scheduler>,
     projectile_manager: Arc<crate::entity::ProjectileManager>,
@@ -301,8 +601,9 @@ async fn tick_loop(h: TickHandles) {
         h.scheduler.tick(tick_counter);
 
         {
-            let mut world = h.world.write();
-            world.tick();
+            h.world.write().tick();
+            h.nether_world.write().tick();
+            h.end_world.write().tick();
         }
 
         // Ticking projectiles (every tick)
@@ -322,9 +623,9 @@ async fn tick_loop(h: TickHandles) {
             h.liquid_sim.tick(&h.world, &h.rak, &h.players).await;
         }
 
-        // Environment hazards (void, lava) every 10 ticks (0.5 sec)
-        if tick_counter % 10 == 0 {
-            check_environment_hazards(&h.world, &h.players, &h.rak).await;
+        // Environment hazards (void, lava, portals) every 4 ticks (0.2 sec)
+        if tick_counter % 4 == 0 {
+            check_environment_hazards(&h.world, &h.nether_world, &h.end_world, &h.players, &h.rak).await;
         }
 
         // Food regeneration & starvation every 80 ticks (4 seconds)
@@ -391,20 +692,86 @@ async fn tick_player_food_and_health(
 
 async fn check_environment_hazards(
     world: &Arc<RwLock<World>>,
+    nether_world: &Arc<RwLock<World>>,
+    end_world: &Arc<RwLock<World>>,
     players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     rak: &RakNetServer,
 ) {
-    let list: Vec<(SocketAddr, i64, f64, f64, f64, u32, i32, String)> = {
+    let list: Vec<(SocketAddr, i64, f64, f64, f64, u32, i32, i32, u32, String)> = {
         let guard = players.read();
-        guard.iter().map(|(a, s)| (*a, s.entity_id, s.x, s.y, s.z, s.health, s.gamemode, s.username.clone())).collect()
+        guard.iter().map(|(a, s)| (*a, s.entity_id, s.x, s.y, s.z, s.health, s.gamemode, s.dimension, s.portal_ticks, s.username.clone())).collect()
     };
 
-    for (addr, eid, px, py, pz, health, gamemode, username) in list {
-        if gamemode != 0 {
-            continue; // Survival only
+    for (addr, eid, px, py, pz, health, gamemode, dimension, portal_ticks, username) in list {
+        let cur_world = match dimension {
+            1 => nether_world,
+            2 => end_world,
+            _ => world,
+        };
+
+        let block_at_feet = {
+            let mut w = cur_world.write();
+            w.get_block_id(px.floor() as i32, py.floor() as i32, pz.floor() as i32)
+        };
+        let block_at_body = {
+            let mut w = cur_world.write();
+            w.get_block_id(px.floor() as i32, (py + 1.0).floor() as i32, pz.floor() as i32)
+        };
+
+        // 1. Nether Portal (block 90)
+        if block_at_feet == 90 || block_at_body == 90 {
+            if portal_ticks == 0 {
+                if dimension == 0 {
+                    let tx = px / 8.0;
+                    let ty = 64.0;
+                    let tz = pz / 8.0;
+                    {
+                        let mut nw = nether_world.write();
+                        build_destination_portal(&mut nw, tx as i32, ty as i32, tz as i32);
+                    }
+                    change_player_dimension_raw(rak, players, world, nether_world, end_world, addr, 1, tx, ty + 1.0, tz).await;
+                } else if dimension == 1 {
+                    let tx = px * 8.0;
+                    let ty = 64.0;
+                    let tz = pz * 8.0;
+                    {
+                        let mut ow = world.write();
+                        build_destination_portal(&mut ow, tx as i32, ty as i32, tz as i32);
+                    }
+                    change_player_dimension_raw(rak, players, world, nether_world, end_world, addr, 0, tx, ty + 1.0, tz).await;
+                }
+            }
+            continue;
         }
 
-        // 1. Void check
+        // 2. End Portal (block 119)
+        if block_at_feet == 119 || block_at_body == 119 {
+            if portal_ticks == 0 {
+                if dimension != 2 {
+                    change_player_dimension_raw(rak, players, world, nether_world, end_world, addr, 2, 0.0, 66.0, 0.0).await;
+                } else {
+                    let (sx, sy, sz) = {
+                        let w = world.read();
+                        (w.spawn_x as f64, w.spawn_y as f64, w.spawn_z as f64)
+                    };
+                    change_player_dimension_raw(rak, players, world, nether_world, end_world, addr, 0, sx, sy, sz).await;
+                }
+            }
+            continue;
+        }
+
+        if portal_ticks > 0 {
+            let mut guard = players.write();
+            if let Some(s) = guard.get_mut(&addr) {
+                s.portal_ticks = s.portal_ticks.saturating_sub(1);
+            }
+        }
+
+        if gamemode != 0 {
+            continue; // Survival only for damage hazards
+        }
+
+        // 3. Void check
         if py < -30.0 {
             let new_hp = health.saturating_sub(4);
             {
@@ -428,6 +795,7 @@ async fn check_environment_hazards(
                         s.x = sx as f64;
                         s.y = sy as f64;
                         s.z = sz as f64;
+                        s.dimension = 0;
                     }
                 }
                 let respawn_pk = RespawnPacket::new(sx as f32, sy as f32, sz as f32);
@@ -442,16 +810,7 @@ async fn check_environment_hazards(
             continue;
         }
 
-        // 2. Lava check
-        let block_at_feet = {
-            let mut w = world.write();
-            w.get_block_id(px.floor() as i32, py.floor() as i32, pz.floor() as i32)
-        };
-        let block_at_body = {
-            let mut w = world.write();
-            w.get_block_id(px.floor() as i32, (py + 1.0).floor() as i32, pz.floor() as i32)
-        };
-
+        // 4. Lava check
         if block_at_feet == 10 || block_at_feet == 11 || block_at_body == 10 || block_at_body == 11 {
             let new_hp = health.saturating_sub(4);
             {
@@ -481,6 +840,7 @@ async fn check_environment_hazards(
                         s.x = sx as f64;
                         s.y = sy as f64;
                         s.z = sz as f64;
+                        s.dimension = 0;
                     }
                 }
                 let respawn_pk = RespawnPacket::new(sx as f32, sy as f32, sz as f32);
@@ -549,6 +909,8 @@ fn clone_state(s: &PlayerState) -> PlayerState {
         sent_chunks: s.sent_chunks.clone(),
         inventory: inv,
         open_container: s.open_container,
+        dimension: s.dimension,
+        portal_ticks: s.portal_ticks,
     }
 }
 
@@ -1786,6 +2148,25 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
             return;
         }
 
+        // Flint and Steel (259) or Fire Charge (385) on Obsidian (49) -> Ignite Nether Portal
+        if (item_id == 259 || item_id == 385) && target_id == 49 {
+            let dim = self_data.players.read().get(&addr).map(|s| s.dimension).unwrap_or(0);
+            let world_arc = self_data.get_world(dim);
+            let portal_blocks = {
+                let mut w = world_arc.write();
+                try_ignite_nether_portal(&mut w, ui.x, ui.y as i32, ui.z)
+            };
+            if let Some(blocks) = portal_blocks {
+                for &(bx, by, bz) in &blocks {
+                    let pk = UpdateBlockPacket::new(bx, by as u32, bz, 90, 1, update_block::FLAG_ALL_PRIORITY);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+                }
+                let sound = LevelSoundEventPacket::new(level_event::SOUND_PORTAL, ui.x as f32 + 0.5, ui.y as f32 + 0.5, ui.z as f32 + 0.5);
+                broadcast_except(&self_data.rak, &self_data.players, None, sound.encode()).await;
+                return;
+            }
+        }
+
         // Hoe on Dirt (3) or Grass (2) -> Farmland (60)
         let is_hoe = item_id == 290 || item_id == 291 || item_id == 292 || item_id == 293 || item_id == 294;
         if is_hoe && (target_id == 2 || target_id == 3) && ui.face == 1 {
@@ -2147,7 +2528,9 @@ async fn send_spawn_chunks(self_data: &OxideServer, addr: SocketAddr, cx: i32, c
     });
 
     let chunks: Vec<Vec<u8>> = {
-        let mut world = self_data.world.write();
+        let dim = self_data.players.read().get(&addr).map(|s| s.dimension).unwrap_or(0);
+        let target_world = self_data.get_world(dim);
+        let mut world = target_world.write();
         wanted.iter()
             .map(|&(x, z)| FullChunkDataPacket::new(x, z, world.serialize_chunk(x, z)).encode())
             .collect()
@@ -2225,6 +2608,8 @@ impl Clone for OxideServer {
         Self {
             rak: self.rak.clone(),
             world: self.world.clone(),
+            nether_world: self.nether_world.clone(),
+            end_world: self.end_world.clone(),
             players: self.players.clone(),
             config: self.config.clone(),
             command_manager: self.command_manager.clone(),

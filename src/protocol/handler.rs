@@ -86,6 +86,8 @@ pub struct PlayerState {
     pub sent_chunks: std::collections::HashSet<(i32, i32)>,
     pub inventory: crate::inventory::inventories::PlayerInventory,
     pub open_container: Option<(i32, i32, i32)>,
+    pub dimension: i32,
+    pub portal_ticks: u32,
 }
 
 impl Default for PlayerState {
@@ -115,6 +117,8 @@ impl PlayerState {
             sent_chunks: std::collections::HashSet::new(),
             inventory: crate::inventory::inventories::PlayerInventory::new(),
             open_container: None,
+            dimension: 0,
+            portal_ticks: 0,
         }
     }
 }

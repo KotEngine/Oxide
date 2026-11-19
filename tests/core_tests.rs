@@ -458,3 +458,96 @@ fn test_expanded_catalog() {
     let items = ItemRegistry::default();
     assert!(items.count() >= 60, "Item registry should have 60+ items, got {}", items.count());
 }
+
+#[test]
+fn test_hell_and_ender_generators() {
+    use oxide::level::generator::{HellGenerator, EnderGenerator};
+
+    // 1. Hell Generator test
+    let hell = HellGenerator::new(12345);
+    let mut hell_chunk = Chunk::new(0, 0);
+    hell.generate_chunk(&mut hell_chunk);
+    hell.populate(&mut hell_chunk);
+
+    assert_eq!(hell_chunk.get_block_id(0, 0, 0), 7, "Hell bottom must be bedrock");
+    assert_eq!(hell_chunk.get_block_id(0, 127, 0), 7, "Hell ceiling must be bedrock");
+    assert_eq!(hell_chunk.biome_ids[0], 8, "Hell biome must be 8");
+
+    // Check presence of netherrack (87)
+    let mut has_netherrack = false;
+    for y in 10..120 {
+        if hell_chunk.get_block_id(8, y, 8) == 87 {
+            has_netherrack = true;
+            break;
+        }
+    }
+    assert!(has_netherrack, "Hell chunk should contain netherrack");
+
+    // 2. Ender Generator test
+    let ender = EnderGenerator::new(12345);
+    let mut end_chunk = Chunk::new(0, 0);
+    ender.generate_chunk(&mut end_chunk);
+    ender.populate(&mut end_chunk);
+
+    assert_eq!(end_chunk.biome_ids[0], 9, "End biome must be 9");
+
+    let mut has_endstone = false;
+    for y in 45..70 {
+        if end_chunk.get_block_id(8, y, 8) == 121 {
+            has_endstone = true;
+            break;
+        }
+    }
+    assert!(has_endstone, "Center End chunk should contain end stone");
+}
+
+#[test]
+fn test_expanded_crafting_recipes() {
+    let cm = CraftingManager::default();
+    assert!(cm.count() >= 45, "Crafting manager should have at least 45 recipes, got {}", cm.count());
+
+    // Bow recipe (280 + 287)
+    let bow_recipe = cm.get_recipe("craft_bow");
+    assert!(bow_recipe.is_some(), "Bow recipe should exist");
+    assert_eq!(bow_recipe.unwrap().result.id, 261);
+
+    // Arrow recipe (318 + 280 + 288)
+    let arrow_recipe = cm.get_recipe("craft_arrow");
+    assert!(arrow_recipe.is_some(), "Arrow recipe should exist");
+    let arrow = arrow_recipe.unwrap();
+    assert_eq!(arrow.result.id, 262);
+    assert_eq!(arrow.result.count, 4);
+
+    // TNT recipe (289 + 12)
+    let tnt_recipe = cm.get_recipe("craft_tnt");
+    assert!(tnt_recipe.is_some(), "TNT recipe should exist");
+    assert_eq!(tnt_recipe.unwrap().result.id, 46);
+
+    // Golden apple recipe (266 + 260)
+    let gapple_recipe = cm.get_recipe("craft_golden_apple");
+    assert!(gapple_recipe.is_some(), "Golden apple recipe should exist");
+    assert_eq!(gapple_recipe.unwrap().result.id, 322);
+
+    // Bread recipe
+    let bread_recipe = cm.get_recipe("craft_bread");
+    assert!(bread_recipe.is_some(), "Bread recipe should exist");
+    assert_eq!(bread_recipe.unwrap().result.id, 297);
+}
+
+#[test]
+fn test_dimension_command_and_packets() {
+    let cmd_mgr = CommandManager::new();
+    let cmds = cmd_mgr.all_commands();
+    assert!(cmds.iter().any(|c| c.name() == "dimension"), "Dimension command should be registered");
+
+    // Test ChangeDimensionPacket serialization
+    let pk = ChangeDimensionPacket::new(1, 100.0, 64.0, 200.0);
+    assert_eq!(pk.dimension, 1);
+    assert_eq!(pk.x, 100.0);
+    assert_eq!(pk.y, 64.0);
+    assert_eq!(pk.z, 200.0);
+
+    let mut stream = oxide::utils::BinaryStream::new();
+    pk.encode_payload(&mut stream);
+    assert!(stream.len() > 0);
+}

@@ -12,3 +12,5 @@ pub use generator::Generator;
 pub use flat::FlatGenerator;
 pub use void::VoidGenerator;
 pub use normal::NormalGenerator;
+pub use hell::HellGenerator;
+pub use ender::EnderGenerator;

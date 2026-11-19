@@ -99,7 +99,8 @@ impl CommandManager {
         self.register(Arc::new(WhitelistCommand));
         self.register(Arc::new(PluginsCommand));
         self.register(Arc::new(ReloadCommand));
-        self.register(Arc::new(crate::command::defaults::summon::SummonCommand));
+        self.register(Arc::new(SummonCommand));
+        self.register(Arc::new(DimensionCommand));
     }
 
     pub fn generate_available_commands_packet(&self) -> crate::protocol::packets::AvailableCommandsPacket {

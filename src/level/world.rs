@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use crate::level::chunk::Chunk;
-use crate::level::generator::{Generator, FlatGenerator, NormalGenerator};
+use crate::level::generator::{
+    Generator, FlatGenerator, NormalGenerator, VoidGenerator, HellGenerator, EnderGenerator,
+};
 
 pub struct World {
     pub chunks: HashMap<(i32, i32), Chunk>,
@@ -38,6 +40,33 @@ impl World {
                 spawn_z: 0,
                 time: 0,
                 generator: Box::new(NormalGenerator::new(seed)),
+            }
+        } else if generator_type.eq_ignore_ascii_case("hell") || generator_type.eq_ignore_ascii_case("nether") {
+            Self {
+                chunks: HashMap::new(),
+                spawn_x: 0,
+                spawn_y: 64,
+                spawn_z: 0,
+                time: 0,
+                generator: Box::new(HellGenerator::new(seed)),
+            }
+        } else if generator_type.eq_ignore_ascii_case("ender") || generator_type.eq_ignore_ascii_case("the_end") || generator_type.eq_ignore_ascii_case("end") {
+            Self {
+                chunks: HashMap::new(),
+                spawn_x: 0,
+                spawn_y: 65,
+                spawn_z: 0,
+                time: 0,
+                generator: Box::new(EnderGenerator::new(seed)),
+            }
+        } else if generator_type.eq_ignore_ascii_case("void") {
+            Self {
+                chunks: HashMap::new(),
+                spawn_x: 0,
+                spawn_y: 64,
+                spawn_z: 0,
+                time: 0,
+                generator: Box::new(VoidGenerator::new()),
             }
         } else {
             Self::new()

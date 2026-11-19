@@ -21,6 +21,7 @@ pub mod defaultgamemode;
 pub mod ban;
 pub mod whitelist;
 pub mod summon;
+pub mod dimension;
 
 pub use gamemode::GamemodeCommand;
 pub use tp::TpCommand;
@@ -45,3 +46,4 @@ pub use defaultgamemode::DefaultGamemodeCommand;
 pub use ban::{BanCommand, BanIpCommand, PardonCommand, PardonIpCommand, BanListCommand};
 pub use whitelist::WhitelistCommand;
 pub use summon::SummonCommand;
+pub use dimension::DimensionCommand;

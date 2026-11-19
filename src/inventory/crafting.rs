@@ -233,6 +233,10 @@ impl CraftingManager {
         self.add_gold_tool_recipes();
         self.add_armor_recipes();
         self.add_furnace_recipes();
+        self.add_combat_recipes();
+        self.add_building_recipes();
+        self.add_redstone_recipes();
+        self.add_food_recipes();
     }
 
     fn add_wood_tool_recipes(&self) {
@@ -346,6 +350,462 @@ impl CraftingManager {
                 height: 1,
             });
         }
+    }
+
+    fn add_combat_recipes(&self) {
+        // Bow: 3 sticks (280) + 3 strings (287)
+        self.add_recipe(Recipe {
+            id: "craft_bow".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(261, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(287, 0, 1)),
+                RecipeIngredient::new(Item::new(287, 0, 1)),
+                RecipeIngredient::new(Item::new(287, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+
+        // Arrow (4x): 1 flint (318) + 1 stick (280) + 1 feather (288)
+        self.add_recipe(Recipe {
+            id: "craft_arrow".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(262, 0, 4),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(318, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(288, 0, 1)),
+            ],
+            width: 1,
+            height: 3,
+        });
+
+        // TNT: 5 gunpowder (289) + 4 sand (12)
+        self.add_recipe(Recipe {
+            id: "craft_tnt".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(46, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(289, 0, 1)),
+                RecipeIngredient::new(Item::new(12, 0, 1)),
+                RecipeIngredient::new(Item::new(289, 0, 1)),
+                RecipeIngredient::new(Item::new(12, 0, 1)),
+                RecipeIngredient::new(Item::new(289, 0, 1)),
+                RecipeIngredient::new(Item::new(12, 0, 1)),
+                RecipeIngredient::new(Item::new(289, 0, 1)),
+                RecipeIngredient::new(Item::new(12, 0, 1)),
+                RecipeIngredient::new(Item::new(289, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+
+        // Golden apple: 8 gold ingots (266) + 1 apple (260)
+        self.add_recipe(Recipe {
+            id: "craft_golden_apple".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(322, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(260, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+                RecipeIngredient::new(Item::new(266, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+    }
+
+    fn add_building_recipes(&self) {
+        // Wooden door (3x): 6 planks (5)
+        self.add_recipe(Recipe {
+            id: "craft_wooden_door".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(324, 0, 3),
+            ingredients: (0..6).map(|_| RecipeIngredient::new(Item::new(5, 0, 1))).collect(),
+            width: 2,
+            height: 3,
+        });
+
+        // Iron door: 6 iron ingots (265)
+        self.add_recipe(Recipe {
+            id: "craft_iron_door".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(330, 0, 1),
+            ingredients: (0..6).map(|_| RecipeIngredient::new(Item::new(265, 0, 1))).collect(),
+            width: 2,
+            height: 3,
+        });
+
+        // Wooden trapdoor (2x): 6 planks (5)
+        self.add_recipe(Recipe {
+            id: "craft_wooden_trapdoor".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(96, 0, 2),
+            ingredients: (0..6).map(|_| RecipeIngredient::new(Item::new(5, 0, 1))).collect(),
+            width: 3,
+            height: 2,
+        });
+
+        // Ladder (3x): 7 sticks (280)
+        self.add_recipe(Recipe {
+            id: "craft_ladder".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(65, 0, 3),
+            ingredients: (0..7).map(|_| RecipeIngredient::new(Item::new(280, 0, 1))).collect(),
+            width: 3,
+            height: 3,
+        });
+
+        // Fence (3x): 4 planks (5) + 2 sticks (280)
+        self.add_recipe(Recipe {
+            id: "craft_fence".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(85, 0, 3),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+            ],
+            width: 3,
+            height: 2,
+        });
+
+        // Fence gate: 2 planks (5) + 4 sticks (280)
+        self.add_recipe(Recipe {
+            id: "craft_fence_gate".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(107, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+            ],
+            width: 3,
+            height: 2,
+        });
+
+        // Bucket: 3 iron ingots (265)
+        self.add_recipe(Recipe {
+            id: "craft_bucket".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(325, 0, 1),
+            ingredients: (0..3).map(|_| RecipeIngredient::new(Item::new(265, 0, 1))).collect(),
+            width: 3,
+            height: 2,
+        });
+
+        // Shears: 2 iron ingots (265)
+        self.add_recipe(Recipe {
+            id: "craft_shears".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(359, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+            ],
+            width: 2,
+            height: 2,
+        });
+
+        // Flint and steel: 1 iron ingot (265) + 1 flint (318)
+        self.add_recipe(Recipe {
+            id: "craft_flint_and_steel".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(259, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(318, 0, 1)),
+            ],
+            width: 2,
+            height: 1,
+        });
+
+        // Bed: 3 wool (35) + 3 planks (5)
+        self.add_recipe(Recipe {
+            id: "craft_bed".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(355, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(35, 0, 1)),
+                RecipeIngredient::new(Item::new(35, 0, 1)),
+                RecipeIngredient::new(Item::new(35, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+            ],
+            width: 3,
+            height: 2,
+        });
+
+        // Glass bottle (3x): 3 glass (20)
+        self.add_recipe(Recipe {
+            id: "craft_glass_bottle".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(374, 0, 3),
+            ingredients: (0..3).map(|_| RecipeIngredient::new(Item::new(20, 0, 1))).collect(),
+            width: 3,
+            height: 2,
+        });
+
+        // Anvil: 3 iron blocks (42) + 4 iron ingots (265)
+        self.add_recipe(Recipe {
+            id: "craft_anvil".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(145, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(42, 0, 1)),
+                RecipeIngredient::new(Item::new(42, 0, 1)),
+                RecipeIngredient::new(Item::new(42, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+
+        // Enchanting table: 1 book (340) + 2 diamonds (264) + 4 obsidian (49)
+        self.add_recipe(Recipe {
+            id: "craft_enchanting_table".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(116, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(340, 0, 1)),
+                RecipeIngredient::new(Item::new(264, 0, 1)),
+                RecipeIngredient::new(Item::new(264, 0, 1)),
+                RecipeIngredient::new(Item::new(49, 0, 1)),
+                RecipeIngredient::new(Item::new(49, 0, 1)),
+                RecipeIngredient::new(Item::new(49, 0, 1)),
+                RecipeIngredient::new(Item::new(49, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+    }
+
+    fn add_redstone_recipes(&self) {
+        // Redstone torch: 1 redstone (331) + 1 stick (280)
+        self.add_recipe(Recipe {
+            id: "craft_redstone_torch".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(76, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(331, 0, 1)),
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+            ],
+            width: 1,
+            height: 2,
+        });
+
+        // Lever: 1 stick (280) + 1 cobblestone (4)
+        self.add_recipe(Recipe {
+            id: "craft_lever".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(69, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(280, 0, 1)),
+                RecipeIngredient::new(Item::new(4, 0, 1)),
+            ],
+            width: 1,
+            height: 2,
+        });
+
+        // Stone button: 1 stone (1)
+        self.add_recipe(Recipe {
+            id: "craft_stone_button".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(77, 0, 1),
+            ingredients: vec![RecipeIngredient::new(Item::new(1, 0, 1))],
+            width: 1,
+            height: 1,
+        });
+
+        // Wooden button: 1 plank (5)
+        self.add_recipe(Recipe {
+            id: "craft_wooden_button".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(143, 0, 1),
+            ingredients: vec![RecipeIngredient::new(Item::new(5, 0, 1))],
+            width: 1,
+            height: 1,
+        });
+
+        // Wooden pressure plate: 2 planks (5)
+        self.add_recipe(Recipe {
+            id: "craft_wooden_pressure_plate".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(72, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+            ],
+            width: 2,
+            height: 1,
+        });
+
+        // Stone pressure plate: 2 stone (1)
+        self.add_recipe(Recipe {
+            id: "craft_stone_pressure_plate".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(70, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(1, 0, 1)),
+                RecipeIngredient::new(Item::new(1, 0, 1)),
+            ],
+            width: 2,
+            height: 1,
+        });
+
+        // Hopper: 5 iron ingots (265) + 1 chest (54)
+        self.add_recipe(Recipe {
+            id: "craft_hopper".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(154, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(54, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+
+        // Piston: 3 planks (5) + 4 cobblestone (4) + 1 iron ingot (265) + 1 redstone (331)
+        self.add_recipe(Recipe {
+            id: "craft_piston".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(33, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(4, 0, 1)),
+                RecipeIngredient::new(Item::new(265, 0, 1)),
+                RecipeIngredient::new(Item::new(4, 0, 1)),
+                RecipeIngredient::new(Item::new(4, 0, 1)),
+                RecipeIngredient::new(Item::new(331, 0, 1)),
+                RecipeIngredient::new(Item::new(4, 0, 1)),
+            ],
+            width: 3,
+            height: 3,
+        });
+    }
+
+    fn add_food_recipes(&self) {
+        // Bread: 3 wheat (296)
+        self.add_recipe(Recipe {
+            id: "craft_bread".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(297, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(296, 0, 1)),
+                RecipeIngredient::new(Item::new(296, 0, 1)),
+                RecipeIngredient::new(Item::new(296, 0, 1)),
+            ],
+            width: 3,
+            height: 1,
+        });
+
+        // Sugar: 1 sugar cane (338)
+        self.add_recipe(Recipe {
+            id: "craft_sugar".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(353, 0, 1),
+            ingredients: vec![RecipeIngredient::new(Item::new(338, 0, 1))],
+            width: 1,
+            height: 1,
+        });
+
+        // Paper (3x): 3 sugar canes (338)
+        self.add_recipe(Recipe {
+            id: "craft_paper".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(339, 0, 3),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(338, 0, 1)),
+                RecipeIngredient::new(Item::new(338, 0, 1)),
+                RecipeIngredient::new(Item::new(338, 0, 1)),
+            ],
+            width: 3,
+            height: 1,
+        });
+
+        // Book: 3 paper (339) + 1 leather (334)
+        self.add_recipe(Recipe {
+            id: "craft_book".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(340, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(339, 0, 1)),
+                RecipeIngredient::new(Item::new(339, 0, 1)),
+                RecipeIngredient::new(Item::new(339, 0, 1)),
+                RecipeIngredient::new(Item::new(334, 0, 1)),
+            ],
+            width: 2,
+            height: 2,
+        });
+
+        // Bowl (4x): 3 planks (5)
+        self.add_recipe(Recipe {
+            id: "craft_bowl".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(281, 0, 4),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+                RecipeIngredient::new(Item::new(5, 0, 1)),
+            ],
+            width: 3,
+            height: 2,
+        });
+
+        // Mushroom stew: 1 bowl (281) + 1 red mushroom (40) + 1 brown mushroom (39)
+        self.add_recipe(Recipe {
+            id: "craft_mushroom_stew".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(282, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(40, 0, 1)),
+                RecipeIngredient::new(Item::new(39, 0, 1)),
+                RecipeIngredient::new(Item::new(281, 0, 1)),
+            ],
+            width: 2,
+            height: 2,
+        });
+
+        // Pumpkin pie: 1 pumpkin (86) + 1 sugar (353) + 1 egg (344)
+        self.add_recipe(Recipe {
+            id: "craft_pumpkin_pie".to_string(),
+            recipe_type: RecipeType::Shaped,
+            result: Item::new(400, 0, 1),
+            ingredients: vec![
+                RecipeIngredient::new(Item::new(86, 0, 1)),
+                RecipeIngredient::new(Item::new(353, 0, 1)),
+                RecipeIngredient::new(Item::new(344, 0, 1)),
+            ],
+            width: 2,
+            height: 2,
+        });
     }
 }
 
