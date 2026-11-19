@@ -1,4 +1,4 @@
-use crate::utils::{BinaryStream, Binary};
+use crate::utils::BinaryStream;
 use super::constants::MAGIC;
 
 pub trait RakNetPacket: Send + Sync {
@@ -23,9 +23,22 @@ impl OfflineMessage {
         magic
     }
 
+    pub fn magic_const() -> [u8; 16] { MAGIC }
+
     pub fn is_valid_magic(magic: &[u8; 16]) -> bool {
         magic == &MAGIC
     }
+}
+
+pub fn write_raknet_string(stream: &mut BinaryStream, s: &str) {
+    stream.put_short(s.len() as u16);
+    stream.put(s.as_bytes());
+}
+
+pub fn read_raknet_string(stream: &mut BinaryStream) -> Option<String> {
+    let len = stream.get_short().ok()? as usize;
+    let bytes = stream.get(len).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 pub fn write_address(stream: &mut BinaryStream, addr: &crate::raknet::InternetAddress) {
@@ -36,13 +49,18 @@ pub fn write_address(stream: &mut BinaryStream, addr: &crate::raknet::InternetAd
             for o in octets {
                 stream.put_byte(!o);
             }
-            stream.put_lshort(addr.port);
+            stream.put_short(addr.port);
         }
-        std::net::IpAddr::V6(_v6) => {
+        std::net::IpAddr::V6(v6) => {
             stream.put_byte(6);
-            stream.put_byte(0);
-            stream.put_lshort(addr.port);
-            stream.put_byte(0);
+            stream.put_lshort(10);
+            stream.put_short(addr.port);
+            stream.put_int(0);
+            let segs = v6.segments();
+            for s in segs {
+                stream.put_short(s);
+            }
+            stream.put_int(0);
         }
     }
 }
@@ -55,7 +73,7 @@ pub fn read_address(stream: &mut BinaryStream) -> Option<crate::raknet::Internet
             for i in 0..4 {
                 octets[i] = !stream.get_byte().ok()?;
             }
-            let port = stream.get_lshort().ok()?;
+            let port = stream.get_short().ok()?;
             let ip = std::net::Ipv4Addr::from(octets);
             Some(crate::raknet::InternetAddress::new(
                 std::net::IpAddr::V4(ip), port, 4,
@@ -63,11 +81,10 @@ pub fn read_address(stream: &mut BinaryStream) -> Option<crate::raknet::Internet
         }
         6 => {
             let _ = stream.get_lshort();
-            let port = stream.get_lshort().ok()?;
-            let _ = stream.get_lshort();
-            let _ = stream.get_byte();
+            let port = stream.get_short().ok()?;
+            let _ = stream.get_int();
             let _ = stream.get(16);
-            let _ = stream.get_lshort();
+            let _ = stream.get_int();
             Some(crate::raknet::InternetAddress::new(
                 std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), port, 6,
             ))

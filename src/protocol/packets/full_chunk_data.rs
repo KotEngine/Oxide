@@ -20,7 +20,7 @@ impl DataPacket for FullChunkDataPacket {
     fn encode_payload(&self, stream: &mut BinaryStream) {
         stream.put_var_int(self.chunk_x);
         stream.put_var_int(self.chunk_z);
-        stream.put_string(std::str::from_utf8(&self.data).unwrap_or(""));
+        stream.put_byte_string(&self.data);
     }
 
     fn decode(buf: Vec<u8>) -> Self where Self: Sized {
@@ -28,7 +28,7 @@ impl DataPacket for FullChunkDataPacket {
         let _ = stream.get_byte();
         let chunk_x = stream.get_var_int().unwrap_or(0);
         let chunk_z = stream.get_var_int().unwrap_or(0);
-        let data = stream.get_string().unwrap_or_default().into_bytes();
+        let data = stream.get_byte_string().unwrap_or_default();
         Self { chunk_x, chunk_z, data }
     }
 

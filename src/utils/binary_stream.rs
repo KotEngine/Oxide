@@ -35,6 +35,7 @@ impl BinaryStream {
     pub fn is_empty(&self) -> bool { self.buffer.is_empty() }
 
     pub fn eof(&self) -> bool { self.offset >= self.buffer.len() }
+    pub fn feof(&self) -> bool { self.eof() }
 
     pub fn remaining(&self) -> usize {
         self.buffer.len().saturating_sub(self.offset)
@@ -198,6 +199,16 @@ impl BinaryStream {
     pub fn put_string(&mut self, v: &str) {
         self.put_unsigned_var_int(v.len() as u32);
         self.buffer.extend_from_slice(v.as_bytes());
+    }
+
+    pub fn put_byte_string(&mut self, v: &[u8]) {
+        self.put_unsigned_var_int(v.len() as u32);
+        self.buffer.extend_from_slice(v);
+    }
+
+    pub fn get_byte_string(&mut self) -> BResult<Vec<u8>> {
+        let len = self.get_unsigned_var_int()? as usize;
+        self.get(len)
     }
 
     pub fn get_uuid(&mut self) -> BResult<UUID> {

@@ -3,6 +3,9 @@ pub struct ProtocolInfo;
 impl ProtocolInfo {
     pub const CURRENT_PROTOCOL: u32 = 113;
     pub const ACCEPTED_PROTOCOLS: [u32; 4] = [110, 111, 112, 113];
+    pub const MINECRAFT_VERSION: [&'static str; 7] = [
+        "v1.1.0", "v1.1.1", "v1.1.2", "v1.1.3", "v1.1.4", "v1.1.5", "v1.1.7",
+    ];
     pub const MINECRAFT_VERSION_NETWORK: &'static str = "1.1.7";
 
     pub const LOGIN_PACKET: u8 = 0x01;
@@ -68,6 +71,8 @@ impl ProtocolInfo {
     pub const CHANGE_DIMENSION_PACKET: u8 = 0x3d;
     pub const SET_PLAYER_GAME_TYPE_PACKET: u8 = 0x3e;
     pub const PLAYER_LIST_PACKET: u8 = 0x3f;
+    pub const SIMPLE_EVENT_PACKET: u8 = 0x40;
+    pub const EVENT_PACKET: u8 = 0x41;
     pub const SPAWN_EXPERIENCE_ORB_PACKET: u8 = 0x42;
     pub const CLIENTBOUND_MAP_ITEM_DATA_PACKET: u8 = 0x43;
     pub const MAP_INFO_REQUEST_PACKET: u8 = 0x44;
@@ -92,6 +97,10 @@ impl ProtocolInfo {
     pub const PLAY_SOUND_PACKET: u8 = 0x57;
     pub const STOP_SOUND_PACKET: u8 = 0x58;
     pub const SET_TITLE_PACKET: u8 = 0x59;
+    pub const ADD_BEHAVIOR_TREE_PACKET: u8 = 0x5a;
+    pub const STRUCTURE_BLOCK_UPDATE_PACKET: u8 = 0x5b;
+    pub const SHOW_STORE_OFFER_PACKET: u8 = 0x5c;
+    pub const PURCHASE_RECEIPT_PACKET: u8 = 0x5d;
 
     pub const BATCH_PACKET: u8 = 0xfe;
 }

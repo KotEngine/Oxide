@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use crate::level::chunk::Chunk;
+use crate::level::generator::{Generator, FlatGenerator, NormalGenerator};
 
 pub struct World {
     pub chunks: HashMap<(i32, i32), Chunk>,
@@ -7,6 +8,7 @@ pub struct World {
     pub spawn_y: i32,
     pub spawn_z: i32,
     pub time: i32,
+    pub generator: Box<dyn Generator>,
 }
 
 impl Default for World {
@@ -18,16 +20,35 @@ impl World {
         Self {
             chunks: HashMap::new(),
             spawn_x: 0,
-            spawn_y: 64,
+            // Flat generator places bedrock/dirt/grass at y=0..2,
+            // spawn position is right above the grass layer, not at 64
+            spawn_y: 4,
             spawn_z: 0,
             time: 0,
+            generator: Box::new(FlatGenerator::new()),
+        }
+    }
+
+    pub fn with_generator(generator_type: &str, seed: u64) -> Self {
+        if generator_type.eq_ignore_ascii_case("normal") || generator_type.eq_ignore_ascii_case("default") {
+            Self {
+                chunks: HashMap::new(),
+                spawn_x: 0,
+                spawn_y: 68,
+                spawn_z: 0,
+                time: 0,
+                generator: Box::new(NormalGenerator::new(seed)),
+            }
+        } else {
+            Self::new()
         }
     }
 
     pub fn get_chunk_or_generate(&mut self, x: i32, z: i32) -> &mut Chunk {
         if !self.chunks.contains_key(&(x, z)) {
             let mut chunk = Chunk::new(x, z);
-            chunk.generate_flat();
+            self.generator.generate_chunk(&mut chunk);
+            self.generator.populate(&mut chunk);
             self.chunks.insert((x, z), chunk);
         }
         self.chunks.get_mut(&(x, z)).unwrap()

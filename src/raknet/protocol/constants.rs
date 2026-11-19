@@ -1,6 +1,12 @@
 pub const RAKNET_VERSION: &str = "0.12.0";
 
+/// Default RakNet protocol version constant.
 pub const DEFAULT_PROTOCOL_VERSION: u8 = 6;
+
+/// RakNet protocol version expected by MCPE 1.1.5 clients.
+/// Server protocol version override for MCPE 1.1.5 compatibility.
+/// Overrides default protocol version in RakNet server.
+pub const MCPE_RAKNET_PROTOCOL_VERSION: u8 = 8;
 
 pub const MAGIC: [u8; 16] = [
     0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe,

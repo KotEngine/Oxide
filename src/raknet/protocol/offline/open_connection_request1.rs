@@ -32,4 +32,8 @@ impl OpenConnectionRequest1 {
         let protocol = stream.get_byte().unwrap_or(DEFAULT_PROTOCOL_VERSION);
         Self { protocol, mtu_size: len, magic }
     }
+
+    pub fn is_valid(&self) -> bool {
+        self.magic == OfflineMessage::magic_const()
+    }
 }

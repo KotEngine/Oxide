@@ -11,7 +11,7 @@ pub const PERMISSION_ADMIN: u32 = 4;
 pub struct AdventureSettingsPacket {
     pub flags: u32,
     pub user_permission: u32,
-    pub world_immu_table: bool,
+    pub world_immutable: bool,
     pub no_pvp: bool,
     pub no_pvm: bool,
     pub no_mvp: bool,
@@ -32,7 +32,7 @@ impl AdventureSettingsPacket {
         Self {
             flags: 0,
             user_permission: PERMISSION_NORMAL,
-            world_immu_table: false,
+            world_immutable: false,
             no_pvp: false,
             no_pvm: false,
             no_mvp: false,
@@ -51,7 +51,7 @@ impl DataPacket for AdventureSettingsPacket {
 
     fn encode_payload(&self, stream: &mut BinaryStream) {
         let mut flags = 0u32;
-        flags |= self.world_immu_table as u32;
+        flags |= self.world_immutable as u32;
         flags |= (self.no_pvp as u32) << 1;
         flags |= (self.no_pvm as u32) << 2;
         flags |= (self.no_mvp as u32) << 3;
@@ -73,7 +73,7 @@ impl DataPacket for AdventureSettingsPacket {
         Self {
             flags,
             user_permission,
-            world_immu_table: (flags & 1) != 0,
+            world_immutable: (flags & 1) != 0,
             no_pvp: (flags & (1 << 1)) != 0,
             no_pvm: (flags & (1 << 2)) != 0,
             no_mvp: (flags & (1 << 3)) != 0,

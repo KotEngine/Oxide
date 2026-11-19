@@ -97,8 +97,60 @@ impl DataPacket for StartGamePacket {
         stream.put_llong(self.current_tick);
     }
 
-    fn decode(_buf: Vec<u8>) -> Self where Self: Sized {
-        Self::new(0, 0)
+    fn decode(buf: Vec<u8>) -> Self where Self: Sized {
+        let mut stream = BinaryStream::from_bytes(buf);
+        let _ = stream.get_byte();
+        let entity_unique_id = stream.get_entity_id().unwrap_or(0);
+        let entity_runtime_id = stream.get_entity_id().unwrap_or(0);
+        let player_gamemode = stream.get_var_int().unwrap_or(0);
+        let (x, y, z) = stream.get_vector3f().unwrap_or((0.0, 0.0, 0.0));
+        let pitch = stream.get_lfloat().unwrap_or(0.0);
+        let yaw = stream.get_lfloat().unwrap_or(0.0);
+        let seed = stream.get_var_int().unwrap_or(0);
+        let dimension = stream.get_var_int().unwrap_or(0);
+        let generator = stream.get_var_int().unwrap_or(1);
+        let world_gamemode = stream.get_var_int().unwrap_or(0);
+        let difficulty = stream.get_var_int().unwrap_or(1);
+        let (spawn_x, spawn_y, spawn_z) = stream.get_block_coords().unwrap_or((0, 0, 0));
+        let has_achievements_disabled = stream.get_bool().unwrap_or(true);
+        let day_cycle_stop_time = stream.get_var_int().unwrap_or(-1);
+        let edu_mode = stream.get_bool().unwrap_or(false);
+        let rain_level = stream.get_lfloat().unwrap_or(0.0);
+        let lightning_level = stream.get_lfloat().unwrap_or(0.0);
+        let commands_enabled = stream.get_bool().unwrap_or(true);
+        let is_texture_packs_required = stream.get_bool().unwrap_or(true);
+        let game_rules = GameRules::get(&mut stream);
+        let level_id = stream.get_string().unwrap_or_default();
+        let world_name = stream.get_string().unwrap_or_default();
+        let premium_world_template_id = stream.get_string().unwrap_or_default();
+        let unknown_bool = stream.get_bool().unwrap_or(false);
+        let current_tick = stream.get_llong().unwrap_or(0);
+        Self {
+            entity_unique_id,
+            entity_runtime_id,
+            player_gamemode,
+            x, y, z,
+            pitch, yaw,
+            seed,
+            dimension,
+            generator,
+            world_gamemode,
+            difficulty,
+            spawn_x, spawn_y: spawn_y as u32, spawn_z,
+            has_achievements_disabled,
+            day_cycle_stop_time,
+            edu_mode,
+            rain_level,
+            lightning_level,
+            commands_enabled,
+            is_texture_packs_required,
+            game_rules,
+            level_id,
+            world_name,
+            premium_world_template_id,
+            unknown_bool,
+            current_tick,
+        }
     }
 
     fn name(&self) -> &'static str { "StartGamePacket" }

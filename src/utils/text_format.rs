@@ -31,7 +31,7 @@ impl TextFormat {
         let bytes = input.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
-            if (bytes[i] == b'&' || bytes[i] == 0xc2 && i + 1 < bytes.len() && bytes[i + 1] == 0xa7) {
+            if bytes[i] == b'&' || bytes[i] == 0xc2 && i + 1 < bytes.len() && bytes[i + 1] == 0xa7  {
                 if bytes[i] == b'&' && i + 1 < bytes.len() && Self::is_color_code(bytes[i + 1]) {
                     out.push(Self::ESCAPE);
                     out.push(bytes[i + 1] as char);

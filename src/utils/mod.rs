@@ -11,3 +11,4 @@ pub use binary_stream::BinaryStream;
 pub use uuid::UUID;
 pub use text_format::TextFormat;
 pub use config::Config;
+pub use color::Color;

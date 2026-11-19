@@ -10,6 +10,7 @@ pub const TYPE_TIP: u8 = 4;
 pub const TYPE_SYSTEM: u8 = 5;
 pub const TYPE_WHISPER: u8 = 6;
 
+#[derive(Debug)]
 pub struct TextPacket {
     pub text_type: u8,
     pub source: String,

@@ -9,7 +9,8 @@ pub struct Chunk {
     pub z: i32,
     pub sub_chunks: Vec<SubChunk>,
     pub biome_ids: Vec<u8>,
-    pub height_map: Vec<u8>,
+    /// Column height map. Serialized to network as 256 little-endian u16 values.
+    pub height_map: Vec<u16>,
 }
 
 impl Chunk {
@@ -18,10 +19,7 @@ impl Chunk {
         for _ in 0..MAX_SUBCHUNKS {
             sub_chunks.push(SubChunk::new());
         }
-        let mut height_map = vec![0u8; HEIGHTMAP_LEN];
-        for v in height_map.iter_mut() {
-            *v = (MAX_SUBCHUNKS * 16) as u8;
-        }
+        let height_map = vec![0u16; HEIGHTMAP_LEN];
         Self {
             x,
             z,
@@ -60,15 +58,31 @@ impl Chunk {
         self.set_block_data(x, y, z, data);
     }
 
+    /// Number of subchunks to serialize:
+    /// index of the highest non-empty subchunk + 1.
+    pub fn sub_chunk_send_count(&self) -> usize {
+        for y in (0..MAX_SUBCHUNKS).rev() {
+            if !self.sub_chunks[y].is_empty() {
+                return y + 1;
+            }
+        }
+        0
+    }
+
     pub fn network_serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        out.push(MAX_SUBCHUNKS as u8);
-        for sc in &self.sub_chunks {
+        let count = self.sub_chunk_send_count();
+        out.push(count as u8);
+        for sc in self.sub_chunks.iter().take(count) {
             out.extend_from_slice(&sc.network_serialize());
         }
-        out.extend_from_slice(&self.height_map);
+        // Heightmap: 256 little-endian shorts (512 bytes)
+        for h in &self.height_map {
+            out.extend_from_slice(&h.to_le_bytes());
+        }
         out.extend_from_slice(&self.biome_ids);
-        out.push(0);
+        out.push(0); // Border blocks count
+        out.push(0); // Extra data count (varint)
         out
     }
 
@@ -84,7 +98,42 @@ impl Chunk {
                         self.set_block(x, y, z, 2, 0);
                     }
                 }
+                self.height_map[(z << 4) | x] = 3;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Network layout test: verifies byte alignment and serialization output.
+    /// count(1) + count*(1+4096+2048+2048+2048) + heightMap(512) + biomes(256)
+    /// + border(1) + extraData varint(1)
+    #[test]
+    fn network_layout_serialization() {
+        let mut c = Chunk::new(0, 0);
+        c.generate_flat();
+
+        let sub = c.sub_chunk_send_count();
+        assert_eq!(sub, 1, "Flat chunk must send 1 subchunk section");
+
+        let data = c.network_serialize();
+        let expected = 1 + sub * (1 + 4096 + 2048 + 2048 + 2048) + 512 + 256 + 1 + 1;
+        assert_eq!(data.len(), expected, "Chunk payload length must match specification");
+
+        assert_eq!(data[0], 1, "Subchunk section count");
+        assert_eq!(data[1], 0, "Subchunk version");
+        // Block (0,0,0) = bedrock(7), (0,1,0) = dirt(3), (0,2,0) = grass(2)
+        assert_eq!(data[2], 7);
+        assert_eq!(data[3], 3);
+        assert_eq!(data[4], 2);
+
+        // Heightmap: column 0 has height 3 (little-endian)
+        let hm = 1 + sub * 10241;
+        assert_eq!(&data[hm..hm + 2], &[3, 0], "Column height");
+        // Trailing bytes: border count and extra data count
+        assert_eq!(&data[data.len() - 2..], &[0, 0]);
     }
 }

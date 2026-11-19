@@ -2,6 +2,7 @@ use crate::utils::BinaryStream;
 use crate::protocol::packet::DataPacket;
 use crate::protocol::info::ProtocolInfo;
 
+#[derive(Debug)]
 pub struct RequestChunkRadiusPacket {
     pub radius: i32,
 }

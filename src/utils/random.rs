@@ -7,22 +7,22 @@ thread_local! {
 }
 
 pub fn next_u32() -> u32 {
-    RNG.with(|r| r.borrow_mut().gen())
+    RNG.with(|r: &RefCell<SmallRng>| r.borrow_mut().gen::<u32>())
 }
 
 pub fn next_i32() -> i32 {
-    RNG.with(|r| r.borrow_mut().gen())
+    RNG.with(|r: &RefCell<SmallRng>| r.borrow_mut().gen::<i32>())
 }
 
 pub fn next_f32() -> f32 {
-    RNG.with(|r| r.borrow_mut().gen())
+    RNG.with(|r: &RefCell<SmallRng>| r.borrow_mut().gen::<f32>())
 }
 
 pub fn next_range(min: i32, max: i32) -> i32 {
     if min >= max { return min; }
-    RNG.with(|r| r.borrow_mut().gen_range(min..max))
+    RNG.with(|r: &RefCell<SmallRng>| r.borrow_mut().gen_range(min..max))
 }
 
 pub fn next_range_f(min: f32, max: f32) -> f32 {
-    RNG.with(|r| r.borrow_mut().gen_range(min..max))
+    RNG.with(|r: &RefCell<SmallRng>| r.borrow_mut().gen_range(min..max))
 }

@@ -2,7 +2,6 @@ use crate::utils::BinaryStream;
 use crate::protocol::packet::DataPacket;
 use crate::protocol::info::ProtocolInfo;
 use crate::utils::UUID;
-use crate::protocol::types::Item;
 
 pub const TYPE_ADD: u8 = 0;
 pub const TYPE_REMOVE: u8 = 1;
@@ -14,9 +13,6 @@ pub struct PlayerListEntry {
     pub name: String,
     pub skin_id: String,
     pub skin: Vec<u8>,
-    pub xbox_user_id: String,
-    pub platform_chat_id: String,
-    pub build_platform: i32,
 }
 
 pub struct PlayerListPacket {
@@ -28,9 +24,8 @@ impl PlayerListPacket {
     pub fn add(entries: Vec<PlayerListEntry>) -> Self { Self { list_type: TYPE_ADD, entries } }
     pub fn remove(uuids: Vec<UUID>) -> Self {
         let entries = uuids.into_iter().map(|uuid| PlayerListEntry {
-            uuid, entity_id: 0, name: String::new(), skin_id: String::new(),
-            skin: Vec::new(), xbox_user_id: String::new(),
-            platform_chat_id: String::new(), build_platform: -1,
+            uuid, entity_id: 0, name: String::new(),
+            skin_id: String::new(), skin: Vec::new(),
         }).collect();
         Self { list_type: TYPE_REMOVE, entries }
     }
@@ -48,10 +43,8 @@ impl DataPacket for PlayerListPacket {
                 stream.put_entity_id(entry.entity_id);
                 stream.put_string(&entry.name);
                 stream.put_string(&entry.skin_id);
-                stream.put_string(std::str::from_utf8(&entry.skin).unwrap_or(""));
-                stream.put_string(&entry.xbox_user_id);
-                stream.put_string(&entry.platform_chat_id);
-                stream.put_var_int(entry.build_platform);
+                // Skin bytes written as byte string
+                stream.put_byte_string(&entry.skin);
             }
         }
     }
@@ -68,22 +61,15 @@ impl DataPacket for PlayerListPacket {
                 let entity_id = stream.get_entity_id().unwrap_or(0);
                 let name = stream.get_string().unwrap_or_default();
                 let skin_id = stream.get_string().unwrap_or_default();
-                let skin = stream.get_string().unwrap_or_default().into_bytes();
-                let xbox_user_id = stream.get_string().unwrap_or_default();
-                let platform_chat_id = stream.get_string().unwrap_or_default();
-                let build_platform = stream.get_var_int().unwrap_or(-1);
-                entries.push(PlayerListEntry {
-                    uuid, entity_id, name, skin_id, skin, xbox_user_id, platform_chat_id, build_platform,
-                });
+                let skin = stream.get_byte_string().unwrap_or_default();
+                entries.push(PlayerListEntry { uuid, entity_id, name, skin_id, skin });
             } else {
                 entries.push(PlayerListEntry {
-                    uuid, entity_id: 0, name: String::new(), skin_id: String::new(),
-                    skin: Vec::new(), xbox_user_id: String::new(),
-                    platform_chat_id: String::new(), build_platform: -1,
+                    uuid, entity_id: 0, name: String::new(),
+                    skin_id: String::new(), skin: Vec::new(),
                 });
             }
         }
-        let _ = Item::air();
         Self { list_type, entries }
     }
 

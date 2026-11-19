@@ -4,6 +4,7 @@ pub mod text;
 pub mod set_time;
 pub mod start_game;
 pub mod move_player;
+pub mod move_entity;
 pub mod remove_block;
 pub mod update_block;
 pub mod player_action;
@@ -25,6 +26,21 @@ pub mod respawn;
 pub mod animate;
 pub mod crafting_data;
 pub mod available_commands;
+pub mod use_item;
+pub mod interact;
+pub mod add_player;
+pub mod add_entity;
+pub mod mob_equipment;
+pub mod container;
+pub mod entity_packets;
+pub mod misc_packets;
+pub mod handshake;
+pub mod resource_pack_data;
+pub mod level_event;
+pub mod item_packets;
+pub mod map_packets;
+pub mod command_packets;
+pub mod trade_packets;
 
 pub use login::LoginPacket;
 pub use play_status::PlayStatusPacket;
@@ -32,6 +48,7 @@ pub use text::TextPacket;
 pub use set_time::SetTimePacket;
 pub use start_game::StartGamePacket;
 pub use move_player::MovePlayerPacket;
+pub use move_entity::MoveEntityPacket;
 pub use remove_block::RemoveBlockPacket;
 pub use update_block::UpdateBlockPacket;
 pub use player_action::PlayerActionPacket;
@@ -53,3 +70,23 @@ pub use respawn::RespawnPacket;
 pub use animate::AnimatePacket;
 pub use crafting_data::CraftingDataPacket;
 pub use available_commands::AvailableCommandsPacket;
+pub use use_item::UseItemPacket;
+pub use interact::InteractPacket;
+pub use add_player::{AddPlayerPacket, RemoveEntityPacket};
+pub use add_entity::AddEntityPacket;
+pub use mob_equipment::{MobEquipmentPacket, MobArmorEquipmentPacket};
+pub use container::*;
+pub use entity_packets::*;
+pub use misc_packets::*;
+pub use handshake::{ClientToServerHandshakePacket, ServerToClientHandshakePacket};
+pub use resource_pack_data::{
+    ResourcePackChunkDataPacket, ResourcePackChunkRequestPacket, ResourcePackDataInfoPacket,
+};
+pub use level_event::{LevelEventPacket, LevelSoundEventPacket};
+pub use item_packets::{
+    AddHangingEntityPacket, AddItemPacket, CameraPacket, ItemFrameDropItemPacket,
+    ReplaceItemInSlotPacket, SpawnExperienceOrbPacket,
+};
+pub use map_packets::{ClientboundMapItemDataPacket, MapDecoration, MapInfoRequestPacket};
+pub use command_packets::{CommandBlockUpdatePacket, CommandStepPacket};
+pub use trade_packets::{UpdateEquipPacket, UpdateTradePacket};

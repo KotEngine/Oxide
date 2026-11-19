@@ -7,6 +7,7 @@ pub const STATUS_SEND_PACKS: u8 = 2;
 pub const STATUS_HAVE_ALL_PACKS: u8 = 3;
 pub const STATUS_COMPLETED: u8 = 4;
 
+#[derive(Debug)]
 pub struct ResourcePackClientResponsePacket {
     pub status: u8,
     pub pack_ids: Vec<String>,

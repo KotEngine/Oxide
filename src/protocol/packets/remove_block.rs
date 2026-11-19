@@ -2,6 +2,7 @@ use crate::utils::BinaryStream;
 use crate::protocol::packet::DataPacket;
 use crate::protocol::info::ProtocolInfo;
 
+#[derive(Debug)]
 pub struct RemoveBlockPacket {
     pub x: i32,
     pub y: u32,

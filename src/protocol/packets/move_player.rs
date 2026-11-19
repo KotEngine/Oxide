@@ -7,6 +7,7 @@ pub const MODE_RESET: u8 = 1;
 pub const MODE_TELEPORT: u8 = 2;
 pub const MODE_PITCH: u8 = 3;
 
+#[derive(Debug)]
 pub struct MovePlayerPacket {
     pub entity_runtime_id: i64,
     pub x: f32,

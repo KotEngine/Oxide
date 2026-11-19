@@ -20,6 +20,7 @@ pub const ACTION_STOP_GLIDE: i32 = 16;
 pub const ACTION_BUILD_DENIED: i32 = 17;
 pub const ACTION_CONTINUE_BREAK: i32 = 18;
 
+#[derive(Debug)]
 pub struct PlayerActionPacket {
     pub entity_runtime_id: i64,
     pub action: i32,

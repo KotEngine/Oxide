@@ -4,14 +4,13 @@ use std::collections::HashMap;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use parking_lot::RwLock;
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug};
 
-use crate::raknet::protocol::constants::{MAGIC, DEFAULT_PROTOCOL_VERSION, MIN_MTU_SIZE};
+use crate::raknet::protocol::constants::{MCPE_RAKNET_PROTOCOL_VERSION, MIN_MTU_SIZE};
 use crate::raknet::protocol::message_ids::MessageIdentifiers;
 use crate::raknet::protocol::datagram::{Datagram, AcknowledgePacket, BITFLAG_VALID, BITFLAG_ACK, BITFLAG_NAK};
 use crate::raknet::protocol::offline::*;
-use crate::raknet::protocol::online::*;
-use crate::raknet::session::{Session, current_time, current_time_millis};
+use crate::raknet::session::{Session, current_time};
 use crate::raknet::InternetAddress;
 
 pub enum RakNetEvent {
@@ -42,6 +41,7 @@ impl RakNetServer {
             socket: socket.into(),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             server_id,
+            server_name,
             events: Arc::new(Mutex::new(Vec::new())),
             shutdown: Arc::new(RwLock::new(false)),
         })
@@ -71,7 +71,14 @@ impl RakNetServer {
                     self.handle_packet(data, addr).await;
                 }
                 Err(e) => {
-                    error!("recv error: {}", e);
+                    // On Windows UDP socket returns WSAECONNRESET (10054) when previous
+                    // sendto received ICMP port unreachable from a disconnected client.
+                    // Not a fatal socket error; the session will be closed by timeout.
+                    if e.kind() == std::io::ErrorKind::ConnectionReset {
+                        debug!("recv: connection reset by remote host (ignored)");
+                    } else {
+                        error!("recv error: {}", e);
+                    }
                 }
             }
         }
@@ -138,9 +145,14 @@ impl RakNetServer {
         } else if id == MessageIdentifiers::ID_OPEN_CONNECTION_REQUEST_1 {
             let req = OpenConnectionRequest1::decode(data);
             if !req.is_valid() { return; }
-            if req.protocol != DEFAULT_PROTOCOL_VERSION {
-                let reply = IncompatibleProtocolVersion::new(req.protocol, self.server_id);
+            if req.protocol != MCPE_RAKNET_PROTOCOL_VERSION {
+                // Return server protocol version so the client knows expected version
+                let reply = IncompatibleProtocolVersion::new(MCPE_RAKNET_PROTOCOL_VERSION, self.server_id);
                 let _ = self.socket.send_to(&reply.encode(), addr).await;
+                warn!(
+                    "Rejected {} - incompatible RakNet protocol version (expected {}, received {})",
+                    addr, MCPE_RAKNET_PROTOCOL_VERSION, req.protocol
+                );
                 return;
             }
             let mtu = req.mtu_size.clamp(MIN_MTU_SIZE, 1492) as u16;
@@ -151,12 +163,16 @@ impl RakNetServer {
             if !req.is_valid() { return; }
             let mtu = req.mtu_size.max(MIN_MTU_SIZE as u16) as usize;
             let internet = Self::sock_to_internet(addr, 4);
-            let mut sessions = self.sessions.write();
-            let session_exists = sessions.contains_key(&addr);
+            let (session_exists,) = {
+                let sessions = self.sessions.read();
+                (sessions.contains_key(&addr),)
+            };
             if !session_exists {
-                let session = Session::new(internet.clone(), req.client_id, mtu, current_time());
-                sessions.insert(addr, session);
-                drop(sessions);
+                {
+                    let mut sessions = self.sessions.write();
+                    let session = Session::new(internet.clone(), req.client_id, mtu, current_time());
+                    sessions.insert(addr, session);
+                }
                 let reply = OpenConnectionReply2::new(self.server_id, internet, mtu as u16);
                 let _ = self.socket.send_to(&reply.encode(), addr).await;
             } else {
@@ -180,17 +196,19 @@ impl RakNetServer {
                 let datagram = Datagram::decode(data);
                 let is_new = !self.sessions.read().contains_key(&addr);
                 if is_new && datagram.packets.is_empty() { return; }
-                let mut sessions = self.sessions.write();
-                let session = sessions.entry(addr).or_insert_with(|| {
-                    Session::new(Self::sock_to_internet(addr, 4), 0, 1492, current_time())
-                });
-                let was_connecting = session.state == crate::raknet::session::STATE_CONNECTING;
-                session.handle_datagram(datagram);
-                let now_connected = session.state == crate::raknet::session::STATE_CONNECTED;
+                let (was_connecting, now_connected, cid) = {
+                    let mut sessions = self.sessions.write();
+                    let session = sessions.entry(addr).or_insert_with(|| {
+                        Session::new(Self::sock_to_internet(addr, 4), 0, 1492, current_time())
+                    });
+                    let was_connecting = session.state == crate::raknet::session::STATE_CONNECTING;
+                    session.handle_datagram(datagram);
+                    let now_connected = session.state == crate::raknet::session::STATE_CONNECTED;
+                    (was_connecting, now_connected, session.client_id)
+                };
                 if was_connecting && now_connected {
                     let ev = self.events.clone();
                     let internet = Self::sock_to_internet(addr, 4);
-                    let cid = session.client_id;
                     tokio::spawn(async move {
                         let mut e = ev.lock().await;
                         e.push(RakNetEvent::OpenSession(internet, cid));
@@ -209,11 +227,12 @@ impl RakNetServer {
     }
 
     pub async fn close_session(&self, addr: SocketAddr, reason: String) {
-        let mut sessions = self.sessions.write();
-        if let Some(session) = sessions.get_mut(&addr) {
-            session.disconnect();
+        {
+            let mut sessions = self.sessions.write();
+            if let Some(session) = sessions.get_mut(&addr) {
+                session.disconnect();
+            }
         }
-        drop(sessions);
         let mut ev = self.events.lock().await;
         ev.push(RakNetEvent::CloseSession(Self::sock_to_internet(addr, 4), reason));
     }

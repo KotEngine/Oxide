@@ -1,5 +1,6 @@
 use crate::utils::Binary;
 
+#[derive(Clone)]
 pub struct EncapsulatedPacket {
     pub reliability: u8,
     pub has_split: bool,

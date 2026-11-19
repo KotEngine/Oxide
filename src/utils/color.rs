@@ -28,6 +28,19 @@ impl Color {
         ((self.a as u32) << 24) | ((self.r as u32) << 16) | ((self.g as u32) << 8) | self.b as u32
     }
 
+    pub fn to_abgr(self) -> u32 {
+        ((self.a as u32) << 24) | ((self.b as u32) << 16) | ((self.g as u32) << 8) | self.r as u32
+    }
+
+    pub fn from_abgr(code: u32) -> Self {
+        Self {
+            r: (code & 0xff) as u8,
+            g: ((code >> 8) & 0xff) as u8,
+            b: ((code >> 16) & 0xff) as u8,
+            a: ((code >> 24) & 0xff) as u8,
+        }
+    }
+
     pub fn mix(self, other: Self, t: f32) -> Self {
         let r = (self.r as f32 * (1.0 - t) + other.r as f32 * t) as u8;
         let g = (self.g as f32 * (1.0 - t) + other.g as f32 * t) as u8;

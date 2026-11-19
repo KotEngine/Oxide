@@ -21,9 +21,9 @@ impl OpenConnectionRequest2 {
         stream.put_byte(Self::ID);
         OfflineMessage::write_magic(&mut stream);
         if let Some(addr) = &self.server_address {
-            super::write_address(&mut stream, addr);
+            write_address(&mut stream, addr);
         }
-        stream.put_lshort(self.mtu_size);
+        stream.put_short(self.mtu_size);
         stream.put_long(self.client_id);
         stream.into_inner()
     }
@@ -33,8 +33,12 @@ impl OpenConnectionRequest2 {
         let _ = stream.get_byte();
         let magic = OfflineMessage::read_magic(&mut stream);
         let server_address = read_address(&mut stream);
-        let mtu_size = stream.get_lshort().unwrap_or(0);
+        let mtu_size = stream.get_short().unwrap_or(0);
         let client_id = stream.get_long().unwrap_or(0);
         Self { client_id, server_address, mtu_size, magic }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.magic == OfflineMessage::magic_const()
     }
 }

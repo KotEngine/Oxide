@@ -1,5 +1,5 @@
 use crate::utils::BinaryStream;
-use crate::raknet::protocol::{message_ids::MessageIdentifiers, packet::OfflineMessage};
+use crate::raknet::protocol::{message_ids::MessageIdentifiers, packet::{OfflineMessage, write_raknet_string, read_raknet_string}};
 
 pub struct UnconnectedPong {
     pub ping_id: i64,
@@ -21,7 +21,7 @@ impl UnconnectedPong {
         stream.put_long(self.ping_id);
         stream.put_long(self.server_id);
         OfflineMessage::write_magic(&mut stream);
-        stream.put_string(&self.server_name);
+        write_raknet_string(&mut stream, &self.server_name);
         stream.into_inner()
     }
 
@@ -31,7 +31,7 @@ impl UnconnectedPong {
         let ping_id = stream.get_long().unwrap_or(0);
         let server_id = stream.get_long().unwrap_or(0);
         let magic = OfflineMessage::read_magic(&mut stream);
-        let server_name = stream.get_string().unwrap_or_default();
+        let server_name = read_raknet_string(&mut stream).unwrap_or_default();
         Self { ping_id, server_id, server_name, magic }
     }
 }

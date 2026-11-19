@@ -40,8 +40,29 @@ impl DataPacket for ResourcePacksInfoPacket {
         }
     }
 
-    fn decode(_buf: Vec<u8>) -> Self where Self: Sized {
-        Self::default()
+    fn decode(buf: Vec<u8>) -> Self where Self: Sized {
+        let mut s = BinaryStream::from_bytes(buf);
+        let _ = s.get_byte();
+        let must_accept = s.get_bool().unwrap_or(false);
+        let bp_count = s.get_lshort().unwrap_or(0);
+        let mut behavior_pack_entries = Vec::with_capacity(bp_count as usize);
+        for _ in 0..bp_count {
+            if s.feof() { break; }
+            let pack_id = s.get_string().unwrap_or_default();
+            let pack_version = s.get_string().unwrap_or_default();
+            let pack_size = s.get_llong().unwrap_or(0);
+            behavior_pack_entries.push(ResourcePackInfoEntry { pack_id, pack_version, pack_size });
+        }
+        let rp_count = s.get_lshort().unwrap_or(0);
+        let mut resource_pack_entries = Vec::with_capacity(rp_count as usize);
+        for _ in 0..rp_count {
+            if s.feof() { break; }
+            let pack_id = s.get_string().unwrap_or_default();
+            let pack_version = s.get_string().unwrap_or_default();
+            let pack_size = s.get_llong().unwrap_or(0);
+            resource_pack_entries.push(ResourcePackInfoEntry { pack_id, pack_version, pack_size });
+        }
+        Self { must_accept, behavior_pack_entries, resource_pack_entries }
     }
 
     fn name(&self) -> &'static str { "ResourcePacksInfoPacket" }

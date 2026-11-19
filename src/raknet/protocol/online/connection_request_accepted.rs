@@ -30,7 +30,7 @@ impl ConnectionRequestAccepted {
         if let Some(addr) = &self.address {
             write_address(&mut stream, addr);
         }
-        stream.put_lshort(0);
+        stream.put_short(0); // system_index (big-endian short)
         let dummy = InternetAddress::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0, 4);
         for i in 0..SYSTEM_ADDRESS_COUNT {
             let addr = self.system_addresses.get(i).unwrap_or(&dummy);
@@ -45,7 +45,7 @@ impl ConnectionRequestAccepted {
         let mut stream = BinaryStream::from_bytes(buffer);
         let _ = stream.get_byte();
         let address = read_address(&mut stream);
-        let _ = stream.get_lshort();
+        let _ = stream.get_short();
         let mut system_addresses = Vec::new();
         let len = stream.len();
         for _ in 0..SYSTEM_ADDRESS_COUNT {

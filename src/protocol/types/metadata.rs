@@ -11,6 +11,14 @@ pub const DATA_TYPE_POS: u8 = 6;
 pub const DATA_TYPE_LONG: u8 = 7;
 pub const DATA_TYPE_VECTOR3F: u8 = 8;
 
+pub const DATA_FLAGS: u32 = 0;
+pub const DATA_FLAG_ONFIRE: u32 = 0;
+pub const DATA_FLAG_SNEAKING: u32 = 1;
+pub const DATA_FLAG_RIDING: u32 = 2;
+pub const DATA_FLAG_SPRINTING: u32 = 3;
+pub const DATA_FLAG_ACTION: u32 = 4;
+pub const DATA_FLAG_INVISIBLE: u32 = 5;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetadataValue {
     Byte(i8),
@@ -30,10 +38,21 @@ pub struct EntityMetadata {
 }
 
 impl EntityMetadata {
+    pub const DATA_FLAGS: u32 = 0;
+    pub const DATA_FLAG_ONFIRE: u32 = 0;
+    pub const DATA_FLAG_SNEAKING: u32 = 1;
+    pub const DATA_FLAG_RIDING: u32 = 2;
+    pub const DATA_FLAG_SPRINTING: u32 = 3;
+    pub const DATA_FLAG_ACTION: u32 = 4;
+    pub const DATA_FLAG_INVISIBLE: u32 = 5;
+
     pub fn new() -> Self { Self { entries: BTreeMap::new() } }
 
     pub fn set_byte(&mut self, key: u32, value: i8) {
         self.entries.insert(key, (DATA_TYPE_BYTE, MetadataValue::Byte(value)));
+    }
+    pub fn set_short(&mut self, key: u32, value: i16) {
+        self.entries.insert(key, (DATA_TYPE_SHORT, MetadataValue::Short(value)));
     }
     pub fn set_int(&mut self, key: u32, value: i32) {
         self.entries.insert(key, (DATA_TYPE_INT, MetadataValue::Int(value)));
@@ -52,6 +71,24 @@ impl EntityMetadata {
     }
     pub fn set_pos(&mut self, key: u32, x: i32, y: i32, z: i32) {
         self.entries.insert(key, (DATA_TYPE_POS, MetadataValue::Pos(x, y, z)));
+    }
+
+    pub fn get_long(&self, key: u32) -> i64 {
+        match self.entries.get(&key) {
+            Some((_, MetadataValue::Long(v))) => *v,
+            _ => 0,
+        }
+    }
+
+    pub fn set_generic_flag(&mut self, flag_id: u32, value: bool) {
+        let mut flags = self.get_long(DATA_FLAGS);
+        let bit = 1i64 << flag_id;
+        if value {
+            flags |= bit;
+        } else {
+            flags &= !bit;
+        }
+        self.set_long(DATA_FLAGS, flags);
     }
 
     pub fn put(&self, stream: &mut BinaryStream) {

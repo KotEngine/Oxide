@@ -34,6 +34,11 @@ impl SubChunk {
         }
     }
 
+    /// Empty section where all block IDs are air (0).
+    pub fn is_empty(&self) -> bool {
+        self.block_ids.iter().all(|&id| id == 0)
+    }
+
     #[inline]
     fn index(x: usize, y: usize, z: usize) -> usize {
         (x << 8) | (z << 4) | y

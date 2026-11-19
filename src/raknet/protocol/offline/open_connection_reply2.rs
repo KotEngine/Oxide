@@ -25,7 +25,7 @@ impl OpenConnectionReply2 {
         if let Some(addr) = &self.client_address {
             write_address(&mut stream, addr);
         }
-        stream.put_lshort(self.mtu_size);
+        stream.put_short(self.mtu_size);
         stream.put_bool(self.server_security);
         stream.into_inner()
     }
@@ -36,7 +36,7 @@ impl OpenConnectionReply2 {
         let magic = OfflineMessage::read_magic(&mut stream);
         let server_id = stream.get_long().unwrap_or(0);
         let client_address = read_address(&mut stream);
-        let mtu_size = stream.get_lshort().unwrap_or(0);
+        let mtu_size = stream.get_short().unwrap_or(0);
         let server_security = stream.get_bool().unwrap_or(false);
         Self { server_id, client_address, mtu_size, server_security, magic }
     }

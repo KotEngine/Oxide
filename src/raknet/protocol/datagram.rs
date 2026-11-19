@@ -127,7 +127,8 @@ impl AcknowledgePacket {
                 records.push((false, start, last));
             }
         }
-        stream.put_lshort(records.len() as u16);
+        // Big-endian short; little-endian breaks client ACK decoding
+        stream.put_short(records.len() as u16);
         for (single, f, s) in records {
             stream.put_bool(single);
             stream.put_ltriad(f);
@@ -141,7 +142,7 @@ impl AcknowledgePacket {
     pub fn decode(buffer: Vec<u8>) -> Self {
         let mut stream = BinaryStream::from_bytes(buffer);
         let flag = stream.get_byte().unwrap_or(0) & 0x3f;
-        let count = stream.get_lshort().unwrap_or(0);
+        let count = stream.get_short().unwrap_or(0);
         let mut packets = Vec::new();
         for _ in 0..count {
             let single = stream.get_bool().unwrap_or(false);

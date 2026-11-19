@@ -16,6 +16,7 @@ pub const MAX_SPLIT_SIZE: i32 = 128;
 pub const MAX_SPLIT_COUNT: usize = 4;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct StoredDatagram {
     seq: u32,
     packets: Vec<EncapsulatedPacket>,
@@ -53,6 +54,7 @@ pub struct Session {
     window_start: u32,
     window_end: u32,
     highest_seq_this_tick: i64,
+    received_datagram_seq: std::collections::HashSet<u32>,
 
     reliable_window_start: u32,
     reliable_window_end: u32,
@@ -96,6 +98,7 @@ impl Session {
             window_start: 0,
             window_end: WINDOW_SIZE,
             highest_seq_this_tick: -1,
+            received_datagram_seq: std::collections::HashSet::new(),
             reliable_window_start: 0,
             reliable_window_end: WINDOW_SIZE,
             reliable_window: std::collections::HashSet::new(),
@@ -148,7 +151,12 @@ impl Session {
             send_time: now,
         };
         self.recovery_queue.insert(seq, stored);
-        self.outgoing.push(datagram.encode());
+        let bytes = datagram.encode();
+        tracing::debug!(
+            "DATAGRAM OUT seq={} packets={} bytes={} (mtu {})",
+            seq, datagram.raw_packets.len() + datagram.packets.len(), bytes.len(), self.mtu_size
+        );
+        self.outgoing.push(bytes);
     }
 
     fn send_packet_bytes(&mut self, bytes: Vec<u8>) {
@@ -200,7 +208,7 @@ impl Session {
                 chunks
             }
             .into_iter().collect();
-            self.split_id = (self.split_id + 1) % 65536;
+            self.split_id = ((self.split_id as u32 + 1) % 65536) as u16;
             let split_id = self.split_id;
             for (i, buf) in buffers.into_iter().enumerate() {
                 let mut pk = EncapsulatedPacket::new();
@@ -243,6 +251,11 @@ impl Session {
             entry.resize(packet.split_count as usize, None);
         }
         entry[packet.split_index as usize] = Some(packet.clone());
+        let have = entry.iter().filter(|p| p.is_some()).count();
+        tracing::debug!(
+            "SPLIT id={} part {}/{} (assembled {})",
+            packet.split_id, packet.split_index + 1, packet.split_count, have
+        );
         for p in entry.iter() {
             if p.is_none() { return None; }
         }
@@ -263,8 +276,19 @@ impl Session {
     }
 
     fn handle_encapsulated(&mut self, mut packet: EncapsulatedPacket) {
+        tracing::debug!(
+            "ENCAP rel={} mi={:?} oi={:?} ch={} split={} ({}/{}) len={}",
+            packet.reliability, packet.message_index, packet.order_index,
+            packet.order_channel, packet.has_split,
+            packet.split_index, packet.split_count, packet.buffer.len()
+        );
         if let Some(mi) = packet.message_index {
             if mi < self.reliable_window_start || mi > self.reliable_window_end || self.reliable_window.contains(&mi) {
+                tracing::warn!(
+                    "DROPPED by reliable window: mi={} (window {}..{}, duplicate={})",
+                    mi, self.reliable_window_start, self.reliable_window_end,
+                    self.reliable_window.contains(&mi)
+                );
                 return;
             }
             self.reliable_window.insert(mi);
@@ -285,6 +309,7 @@ impl Session {
 
         use PacketReliability as R;
         if R::is_sequenced_or_ordered(packet.reliability) && packet.order_channel as usize >= CHANNEL_COUNT {
+            tracing::warn!("DROPPED: channel {} out of range", packet.order_channel);
             return;
         }
         if R::is_sequenced(packet.reliability) {
@@ -292,6 +317,7 @@ impl Session {
             let si = packet.sequence_index.unwrap_or(0);
             let oi = packet.order_index.unwrap_or(0);
             if si < self.receive_sequenced_highest[ch] || oi < self.receive_ordered_index[ch] {
+                tracing::warn!("DROPPED stale sequenced packet: si={} oi={}", si, oi);
                 return;
             }
             self.receive_sequenced_highest[ch] = si + 1;
@@ -310,7 +336,13 @@ impl Session {
                 }
                 self.receive_ordered_index[ch] = i;
             } else if oi > self.receive_ordered_index[ch] {
+                tracing::warn!(
+                    "BUFFERED ordered packet: oi={}, expecting {} (buffered {})",
+                    oi, self.receive_ordered_index[ch], self.receive_ordered_packets[ch].len() + 1
+                );
                 self.receive_ordered_packets[ch].insert(oi, packet);
+            } else {
+                tracing::warn!("DROPPED stale ordered packet: oi={}, expecting {}", oi, self.receive_ordered_index[ch]);
             }
         } else {
             self.route_encapsulated(packet);
@@ -320,15 +352,20 @@ impl Session {
     fn route_encapsulated(&mut self, packet: EncapsulatedPacket) {
         if packet.buffer.is_empty() { return; }
         let id = packet.buffer[0];
+        tracing::debug!(
+            "ROUTE id=0x{:02x} rel={} len={} state={}",
+            id, packet.reliability, packet.buffer.len(), self.state
+        );
         use crate::raknet::protocol::message_ids::MessageIdentifiers as M;
         if id == M::ID_CONNECTION_REQUEST && self.state == STATE_CONNECTING {
             let req = ConnectionRequest::decode(packet.buffer.clone());
-            let mut reply = ConnectionRequestAccepted::new(
+            let reply = ConnectionRequestAccepted::new(
                 self.address.clone(),
                 req.send_ping_time,
                 current_time_millis(),
             );
-            self.outgoing.push(reply.encode());
+            // UNRELIABLE, channel 0, PRIORITY_IMMEDIATE
+            self.send_immediate(reply.encode(), PacketReliability::UNRELIABLE, 0);
         } else if id == M::ID_NEW_INCOMING_CONNECTION && self.state == STATE_CONNECTING {
             self.state = STATE_CONNECTED;
             self.is_temporal = false;
@@ -338,37 +375,67 @@ impl Session {
         } else if id == M::ID_CONNECTED_PING {
             let ping = ConnectedPing::decode(packet.buffer.clone());
             let pong = ConnectedPong::new(ping.send_ping_time, current_time_millis());
-            self.outgoing.push(pong.encode());
+            // UNRELIABLE, channel 0, normal priority
+            self.send_payload(pong.encode(), PacketReliability::UNRELIABLE, 0);
         } else if id == M::ID_CONNECTED_PONG {
             let pong = ConnectedPong::decode(packet.buffer.clone());
             self.last_ping_measure = current_time_millis() - pong.send_ping_time;
         } else if id >= M::ID_USER_PACKET_ENUM {
             if self.state == STATE_CONNECTED {
                 self.incoming.push(packet.buffer);
+            } else {
+                tracing::warn!(
+                    "Game packet 0x{:02x} dropped: session is not CONNECTED yet (state={})",
+                    id, self.state
+                );
             }
+        } else {
+            tracing::debug!("ROUTE: unhandled packet 0x{:02x} (state={})", id, self.state);
         }
     }
 
     pub fn handle_datagram(&mut self, datagram: Datagram) {
         self.is_active = true;
         self.last_update = current_time();
+        tracing::debug!(
+            "DATAGRAM seq={:?} packets={}",
+            datagram.seq_number, datagram.packets.len()
+        );
         if let Some(seq) = datagram.seq_number {
-            if seq < self.window_start || seq > self.window_end || self.ack_queue.contains(&seq) {
+            // Drop packets completely outside sliding window
+            if seq < self.window_start || seq > self.window_end {
+                tracing::debug!(
+                    "Datagram seq={} outside window {}..{}",
+                    seq, self.window_start, self.window_end
+                );
                 return;
             }
+
+            // If already received, re-queue ACK so client stops resending, but don't reprocess
+            if self.received_datagram_seq.contains(&seq) || self.ack_queue.contains(&seq) {
+                if !self.ack_queue.contains(&seq) {
+                    self.ack_queue.push(seq);
+                }
+                return;
+            }
+
+            self.received_datagram_seq.insert(seq);
             self.nack_queue.retain(|&s| s != seq);
             self.ack_queue.push(seq);
+
             if (seq as i64) > self.highest_seq_this_tick {
                 self.highest_seq_this_tick = seq as i64;
             }
+
             if seq == self.window_start {
-                while self.ack_queue.contains(&self.window_start) {
-                    self.window_start += 1;
-                    self.window_end += 1;
+                while self.received_datagram_seq.contains(&self.window_start) {
+                    self.received_datagram_seq.remove(&self.window_start);
+                    self.window_start = self.window_start.wrapping_add(1);
+                    self.window_end = self.window_end.wrapping_add(1);
                 }
             } else if seq > self.window_start {
                 for i in self.window_start..seq {
-                    if !self.ack_queue.contains(&i) {
+                    if !self.received_datagram_seq.contains(&i) && !self.ack_queue.contains(&i) && !self.nack_queue.contains(&i) {
                         self.nack_queue.push(i);
                     }
                 }
@@ -403,14 +470,11 @@ impl Session {
         }
         self.is_active = false;
 
-        let diff = (self.highest_seq_this_tick as i64 - self.window_start as i64 + 1).max(0) as u32;
-        if diff > 0 {
-            self.window_start += diff;
-            self.window_end += diff;
-        }
+        self.highest_seq_this_tick = -1;
 
         if !self.ack_queue.is_empty() {
             let ack = AcknowledgePacket { flag: crate::raknet::protocol::datagram::BITFLAG_ACK, packets: std::mem::take(&mut self.ack_queue) };
+            tracing::debug!("ACK -> {:?}", ack.packets);
             self.send_packet_bytes(ack.encode());
         }
         if !self.nack_queue.is_empty() {
@@ -420,7 +484,8 @@ impl Session {
 
         if !self.packet_to_send.is_empty() {
             let limit = 16.min(self.packet_to_send.len());
-            for stored in self.packet_to_send.drain(..limit) {
+            let drained: Vec<StoredDatagram> = self.packet_to_send.drain(..limit).collect();
+            for stored in drained {
                 let mut dg = Datagram::new();
                 dg.packets = stored.packets;
                 dg.raw_packets = stored.raw_packets;
@@ -445,7 +510,8 @@ impl Session {
 
         if self.last_ping_time + 5.0 < now {
             let ping = ConnectedPing::new(current_time_millis());
-            self.outgoing.push(ping.encode());
+            // UNRELIABLE, channel 0, PRIORITY_IMMEDIATE
+            self.send_immediate(ping.encode(), PacketReliability::UNRELIABLE, 0);
             self.last_ping_time = now;
         }
 

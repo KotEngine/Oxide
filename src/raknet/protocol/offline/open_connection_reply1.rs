@@ -21,7 +21,7 @@ impl OpenConnectionReply1 {
         OfflineMessage::write_magic(&mut stream);
         stream.put_long(self.server_id);
         stream.put_bool(self.server_security);
-        stream.put_lshort(self.mtu_size);
+        stream.put_short(self.mtu_size);
         stream.into_inner()
     }
 
@@ -31,7 +31,7 @@ impl OpenConnectionReply1 {
         let magic = OfflineMessage::read_magic(&mut stream);
         let server_id = stream.get_long().unwrap_or(0);
         let server_security = stream.get_bool().unwrap_or(false);
-        let mtu_size = stream.get_lshort().unwrap_or(0);
+        let mtu_size = stream.get_short().unwrap_or(0);
         Self { server_id, server_security, mtu_size, magic }
     }
 }
