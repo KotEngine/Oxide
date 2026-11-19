@@ -23,7 +23,7 @@ pub struct CraftingDataPacket {
 }
 
 impl Default for CraftingDataPacket {
-    fn default() -> Self { Self { entries: Vec::new(), clean_recipes: true } }
+    fn default() -> Self { Self { entries: Vec::new(), clean_recipes: false } }
 }
 
 impl CraftingDataPacket {

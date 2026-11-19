@@ -171,6 +171,14 @@ impl OxideServer {
         settings.user_permission = adventure_settings::PERMISSION_NORMAL;
         self.send_packet_to(addr, settings.encode());
 
+        if mode == 1 {
+            let eid = self.players.read().get(&addr).map(|s| s.entity_id).unwrap_or(0);
+            let mut creative_pk = ContainerSetContentPacket::new(crate::protocol::types::ContainerIds::CREATIVE as u32);
+            creative_pk.target_eid = eid;
+            creative_pk.items = crate::item::creative::get_creative_items().to_vec();
+            self.send_packet_to(addr, creative_pk.encode());
+        }
+
         self.send_message_to(addr, &format!("Your game mode has been updated to {}", mode_name));
     }
 
@@ -537,8 +545,16 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     let spawn_status = PlayStatusPacket::new(play_status::PLAYER_SPAWN);
                     send_packet(&self_data.rak, addr, spawn_status.encode()).await;
 
+                    let available_cmds = self_data.command_manager.generate_available_commands_packet();
+                    send_packet(&self_data.rak, addr, available_cmds.encode()).await;
+
                     let crafting_pk = CraftingDataPacket::new();
                     send_packet(&self_data.rak, addr, crafting_pk.encode()).await;
+
+                    let mut creative_pk = ContainerSetContentPacket::new(crate::protocol::types::ContainerIds::CREATIVE as u32);
+                    creative_pk.target_eid = entity_id;
+                    creative_pk.items = crate::item::creative::get_creative_items().to_vec();
+                    send_packet(&self_data.rak, addr, creative_pk.encode()).await;
 
                     let mut content_pk = ContainerSetContentPacket::new(crate::protocol::types::ContainerIds::INVENTORY as u32);
                     content_pk.target_eid = entity_id;
@@ -592,13 +608,27 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
             });
         }
         IncomingPacket::MovePlayer(mv) => {
+            let mut chunk_to_load = None;
             if let Some(state) = self_data.players.write().get_mut(&addr) {
+                let old_cx = (state.x as i32) >> 4;
+                let old_cz = (state.z as i32) >> 4;
                 state.x = mv.x as f64;
                 state.y = (mv.y - 1.62) as f64;
                 state.z = mv.z as f64;
                 state.yaw = mv.yaw;
                 state.pitch = mv.pitch;
                 state.on_ground = mv.on_ground;
+                let new_cx = (state.x as i32) >> 4;
+                let new_cz = (state.z as i32) >> 4;
+                if old_cx != new_cx || old_cz != new_cz {
+                    chunk_to_load = Some((state.x as i32, state.z as i32, state.chunk_radius));
+                }
+            }
+            if let Some((px, pz, radius)) = chunk_to_load {
+                let server_clone = self_data.clone();
+                tokio::spawn(async move {
+                    send_spawn_chunks(&server_clone, addr, px, pz, radius).await;
+                });
             }
         }
         IncomingPacket::Text(txt) => {
@@ -702,15 +732,24 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     *id_guard += 1;
                     id
                 };
-                let pos = self_data.players.read().get(&addr).map(|s| (s.x, s.y, s.z));
-                if let Some((px, py, pz)) = pos {
-                    let add_item = AddItemEntityPacket::new(
+                let player_info = self_data.players.read().get(&addr).map(|s| (s.x, s.y, s.z, s.yaw, s.pitch));
+                if let Some((px, py, pz, yaw, pitch)) = player_info {
+                    let yaw_rad = (yaw as f64).to_radians();
+                    let pitch_rad = (pitch as f64).to_radians();
+                    let speed_x = (-yaw_rad.sin() * pitch_rad.cos() * 0.4) as f32;
+                    let speed_y = (-pitch_rad.sin() * 0.4 + 0.1) as f32;
+                    let speed_z = (yaw_rad.cos() * pitch_rad.cos() * 0.4) as f32;
+
+                    let mut add_item = AddItemEntityPacket::new(
                         eid,
                         drop_pk.item.clone(),
                         px as f32,
-                        (py + 1.2) as f32,
+                        (py + 1.3) as f32,
                         pz as f32,
                     );
+                    add_item.speed_x = speed_x;
+                    add_item.speed_y = speed_y;
+                    add_item.speed_z = speed_z;
                     broadcast_except(&self_data.rak, &self_data.players, None, add_item.encode()).await;
                 }
             }
@@ -803,22 +842,36 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     let pk = UpdateBlockPacket::new(x, y as u32, z, 0, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
 
-    // Spawn block drop item entity
-    let entity_id = {
-        let mut eid = self_data.next_entity_id.write();
-        let id = *eid;
-        *eid += 1;
-        id
-    };
-    let drop_item = crate::protocol::types::Item::new(old_id as i32, 0, 1);
-    let drop_pk = AddItemEntityPacket::new(
-        entity_id,
-        drop_item,
-        x as f32 + 0.5,
-        y as f32 + 0.25,
-        z as f32 + 0.5,
-    );
-    broadcast_except(&self_data.rak, &self_data.players, None, drop_pk.encode()).await;
+    // Spawn block drop item entity if survival
+    let is_survival = self_data.players.read().get(&addr).map(|s| s.gamemode == 0).unwrap_or(true);
+    if is_survival {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let offset_x: f32 = rng.gen_range(-0.15..0.15);
+        let offset_z: f32 = rng.gen_range(-0.15..0.15);
+        let speed_x: f32 = rng.gen_range(-0.1..0.1);
+        let speed_y: f32 = 0.2;
+        let speed_z: f32 = rng.gen_range(-0.1..0.1);
+
+        let entity_id = {
+            let mut eid = self_data.next_entity_id.write();
+            let id = *eid;
+            *eid += 1;
+            id
+        };
+        let drop_item = crate::protocol::types::Item::new(old_id as i32, 0, 1);
+        let mut drop_pk = AddItemEntityPacket::new(
+            entity_id,
+            drop_item,
+            x as f32 + 0.5 + offset_x,
+            y as f32 + 0.5,
+            z as f32 + 0.5 + offset_z,
+        );
+        drop_pk.speed_x = speed_x;
+        drop_pk.speed_y = speed_y;
+        drop_pk.speed_z = speed_z;
+        broadcast_except(&self_data.rak, &self_data.players, None, drop_pk.encode()).await;
+    }
 }
 
 async fn handle_place_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y: i32, z: i32, face: i32, item_id: i32) {

@@ -80,6 +80,42 @@ impl CommandManager {
         self.register(Arc::new(SpawnpointCommand));
         self.register(Arc::new(SetworldspawnCommand));
     }
+
+    pub fn generate_available_commands_packet(&self) -> crate::protocol::packets::AvailableCommandsPacket {
+        let mut map = serde_json::Map::new();
+        for cmd in self.all_commands() {
+            let mut ver = serde_json::Map::new();
+            ver.insert("description".to_string(), serde_json::Value::String(cmd.description().to_string()));
+            let aliases: Vec<serde_json::Value> = cmd.aliases().iter().map(|a| serde_json::Value::String(a.to_string())).collect();
+            ver.insert("aliases".to_string(), serde_json::Value::Array(aliases));
+            ver.insert("permission".to_string(), serde_json::Value::String("any".to_string()));
+
+            let mut overload_input = serde_json::Map::new();
+            let mut param = serde_json::Map::new();
+            param.insert("name".to_string(), serde_json::Value::String("args".to_string()));
+            param.insert("type".to_string(), serde_json::Value::String("rawtext".to_string()));
+            param.insert("optional".to_string(), serde_json::Value::Bool(true));
+            overload_input.insert("parameters".to_string(), serde_json::Value::Array(vec![serde_json::Value::Object(param)]));
+
+            let mut def = serde_json::Map::new();
+            def.insert("input".to_string(), serde_json::Value::Object(overload_input));
+            def.insert("output".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+
+            let mut overloads = serde_json::Map::new();
+            overloads.insert("default".to_string(), serde_json::Value::Object(def));
+            ver.insert("overloads".to_string(), serde_json::Value::Object(overloads));
+
+            let mut cmd_obj = serde_json::Map::new();
+            cmd_obj.insert("versions".to_string(), serde_json::Value::Array(vec![serde_json::Value::Object(ver)]));
+
+            map.insert(cmd.name().to_string(), serde_json::Value::Object(cmd_obj));
+        }
+        let json_str = serde_json::Value::Object(map).to_string();
+        crate::protocol::packets::AvailableCommandsPacket {
+            commands: json_str,
+            unknown: String::new(),
+        }
+    }
 }
 
 impl Default for CommandManager {

@@ -1,4 +1,5 @@
 use oxide::block::BlockRegistry;
+use oxide::command::CommandManager;
 use oxide::item::ItemRegistry;
 use oxide::inventory::CraftingManager;
 use oxide::event::EventBus;
@@ -223,4 +224,48 @@ fn test_zigzag_varint_negative_values() {
         let decoded = Binary::read_var_long(&bytes, &mut offset).expect("VarLong decoding should succeed");
         assert_eq!(decoded, val, "Round-trip VarLong mismatch for {}", val);
     }
+}
+
+#[test]
+fn test_creative_items_loading() {
+    let items = oxide::item::creative::get_creative_items();
+    assert!(!items.is_empty(), "Creative item palette must not be empty");
+    assert_eq!(items.len(), 823, "MCPE 1.1.5 vanilla creative item count should be 823");
+    // Verify first item is building block or tool (not all 0)
+    assert!(items.iter().any(|item| item.id > 0));
+}
+
+#[test]
+fn test_available_commands_packet() {
+    let cm = CommandManager::new();
+    let packet = cm.generate_available_commands_packet();
+    assert!(!packet.commands.is_empty());
+    let parsed: serde_json::Value = serde_json::from_str(&packet.commands).expect("Command palette must be valid JSON");
+    assert!(parsed.get("help").is_some(), "Must contain help command");
+    assert!(parsed.get("gamemode").is_some(), "Must contain gamemode command");
+    assert!(parsed.get("tp").is_some() || parsed.get("teleport").is_some(), "Must contain teleport command");
+}
+
+#[test]
+fn test_add_item_entity_packet_with_velocity() {
+    use oxide::protocol::packets::AddItemEntityPacket;
+    use oxide::protocol::packet::DataPacket;
+    use oxide::protocol::types::Item;
+
+    let mut pk = AddItemEntityPacket::new(1001, Item::new(1, 0, 1), 10.5, 64.0, -15.5);
+    pk.speed_x = 0.05;
+    pk.speed_y = 0.2;
+    pk.speed_z = -0.08;
+
+    let encoded = pk.encode();
+    let decoded = AddItemEntityPacket::decode(encoded);
+
+    assert_eq!(decoded.entity_runtime_id, 1001);
+    assert_eq!(decoded.item.id, 1);
+    assert!((decoded.x - 10.5).abs() < 1e-4);
+    assert!((decoded.y - 64.0).abs() < 1e-4);
+    assert!((decoded.z - (-15.5)).abs() < 1e-4);
+    assert!((decoded.speed_x - 0.05).abs() < 1e-4);
+    assert!((decoded.speed_y - 0.2).abs() < 1e-4);
+    assert!((decoded.speed_z - (-0.08)).abs() < 1e-4);
 }
