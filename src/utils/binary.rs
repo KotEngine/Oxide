@@ -171,8 +171,7 @@ impl Binary {
 
     pub fn read_var_int(buf: &[u8], offset: &mut usize) -> Result<i32> {
         let raw = Self::read_unsigned_var_int(buf, offset)?;
-        let tmp = ((raw << 31) >> 31) ^ raw >> 1;
-        Ok((tmp ^ (raw & (1u32 << 31))) as i32)
+        Ok(((raw >> 1) as i32) ^ (-((raw & 1) as i32)))
     }
 
     pub fn write_unsigned_var_int(mut value: u32) -> Vec<u8> {
@@ -189,8 +188,8 @@ impl Binary {
     }
 
     pub fn write_var_int(v: i32) -> Vec<u8> {
-        let v = v as u32;
-        Self::write_unsigned_var_int((v << 1) ^ (v >> 31))
+        let zigzag = (v.wrapping_shl(1) ^ (v >> 31)) as u32;
+        Self::write_unsigned_var_int(zigzag)
     }
 
     pub fn read_unsigned_var_long(buf: &[u8], offset: &mut usize) -> Result<u64> {
@@ -215,8 +214,7 @@ impl Binary {
 
     pub fn read_var_long(buf: &[u8], offset: &mut usize) -> Result<i64> {
         let raw = Self::read_unsigned_var_long(buf, offset)?;
-        let tmp = ((raw << 63) >> 63) ^ raw >> 1;
-        Ok((tmp ^ (raw & (1u64 << 63))) as i64)
+        Ok(((raw >> 1) as i64) ^ (-((raw & 1) as i64)))
     }
 
     pub fn write_unsigned_var_long(mut value: u64) -> Vec<u8> {
@@ -233,7 +231,7 @@ impl Binary {
     }
 
     pub fn write_var_long(v: i64) -> Vec<u8> {
-        let v = v as u64;
-        Self::write_unsigned_var_long((v << 1) ^ (v >> 63))
+        let zigzag = (v.wrapping_shl(1) ^ (v >> 63)) as u64;
+        Self::write_unsigned_var_long(zigzag)
     }
 }

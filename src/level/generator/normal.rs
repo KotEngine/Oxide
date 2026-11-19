@@ -88,8 +88,12 @@ impl Generator for NormalGenerator {
                 if biome.snow && height_u >= 62 && height_u + 1 < 256 {
                     chunk.set_block(x, height_u + 1, z, 78, 0);
                 }
+
+                chunk.biome_ids[(z << 4) | x] = biome.id;
             }
         }
+        chunk.recalculate_height_map();
+        chunk.populate_sky_light();
     }
 
     fn populate(&self, chunk: &mut Chunk) {

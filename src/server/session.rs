@@ -464,7 +464,7 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                         entity_runtime_id: entity_id,
                         player_gamemode: gamemode,
                         x: spawn_x as f32 + 0.5,
-                        y: spawn_y as f32,
+                        y: (spawn_y as f32) + 1.62,
                         z: spawn_z as f32 + 0.5,
                         pitch: 0.0, yaw: 0.0,
                         seed: 0,
@@ -479,7 +479,7 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                         rain_level: 0.0,
                         lightning_level: 0.0,
                         commands_enabled: true,
-                        is_texture_packs_required: true,
+                        is_texture_packs_required: false,
                         game_rules: GameRules::default_rules(),
                         level_id: String::new(),
                         world_name: "Oxide".to_string(),
@@ -519,7 +519,8 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     let radius_pk = ChunkRadiusUpdatedPacket::new(chunk_radius);
                     send_packet(&self_data.rak, addr, radius_pk.encode()).await;
 
-                    send_spawn_chunks(self_data, addr, spawn_x, spawn_z, chunk_radius).await;
+                    // Send initial spawn chunks (closest to spawn first)
+                    send_spawn_chunks(self_data, addr, spawn_x, spawn_z, chunk_radius.min(4)).await;
 
                     if let Some(state) = self_data.players.write().get_mut(&addr) {
                         state.x = spawn_x as f64 + 0.5;
@@ -527,10 +528,24 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                         state.z = spawn_z as f64 + 0.5;
                         state.logged_in = true;
                         state.spawned = true;
+                        state.on_ground = true;
                     }
+
+                    let spawn_pos_pk = SetSpawnPositionPacket::new_player(spawn_x, spawn_y, spawn_z);
+                    send_packet(&self_data.rak, addr, spawn_pos_pk.encode()).await;
 
                     let spawn_status = PlayStatusPacket::new(play_status::PLAYER_SPAWN);
                     send_packet(&self_data.rak, addr, spawn_status.encode()).await;
+
+                    let crafting_pk = CraftingDataPacket::new();
+                    send_packet(&self_data.rak, addr, crafting_pk.encode()).await;
+
+                    let mut content_pk = ContainerSetContentPacket::new(crate::protocol::types::ContainerIds::INVENTORY as u32);
+                    content_pk.target_eid = entity_id;
+                    content_pk.items = self_data.players.read().get(&addr)
+                        .map(|s| s.inventory.get_contents())
+                        .unwrap_or_default();
+                    send_packet(&self_data.rak, addr, content_pk.encode()).await;
 
                     spawn_existing_players_to(self_data, addr).await;
                     announce_new_player_to_others(self_data, addr, entity_id, username.clone(), uuid).await;
@@ -542,6 +557,14 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     self_data.event_bus.fire(crate::event::event::PlayerJoinEvent {
                         player_name: username.clone(),
                     });
+
+                    // Stream remaining chunks up to full radius in background
+                    if chunk_radius > 4 {
+                        let server_clone = self_data.clone();
+                        tokio::spawn(async move {
+                            send_spawn_chunks(&server_clone, addr, spawn_x, spawn_z, chunk_radius).await;
+                        });
+                    }
                 }
             }
         }
@@ -563,12 +586,15 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 let w = self_data.world.read();
                 (w.spawn_x, w.spawn_z)
             };
-            send_spawn_chunks(self_data, addr, sx, sz, radius).await;
+            let server_clone = self_data.clone();
+            tokio::spawn(async move {
+                send_spawn_chunks(&server_clone, addr, sx, sz, radius).await;
+            });
         }
         IncomingPacket::MovePlayer(mv) => {
             if let Some(state) = self_data.players.write().get_mut(&addr) {
                 state.x = mv.x as f64;
-                state.y = mv.y as f64;
+                state.y = (mv.y - 1.62) as f64;
                 state.z = mv.z as f64;
                 state.yaw = mv.yaw;
                 state.pitch = mv.pitch;
@@ -902,7 +928,7 @@ async fn spawn_existing_players_to(self_data: &OxideServer, addr: SocketAddr) {
             .collect()
     };
     for (eid, name, uuid, x, y, z, yaw, pitch) in others {
-        let mut pk = AddPlayerPacket::new(uuid, name.clone(), eid, x as f32, y as f32, z as f32);
+        let mut pk = AddPlayerPacket::new(uuid, name.clone(), eid, x as f32, (y + 1.62) as f32, z as f32);
         pk.yaw = yaw;
         pk.pitch = pitch;
         send_packet(&self_data.rak, addr, pk.encode()).await;
@@ -913,8 +939,9 @@ async fn announce_new_player_to_others(self_data: &OxideServer, addr: SocketAddr
     let (x, y, z, yaw, pitch) = self_data.players.read().get(&addr)
         .map(|s| (s.x, s.y, s.z, s.yaw, s.pitch))
         .unwrap_or((0.0, 64.0, 0.0, 0.0, 0.0));
-    let pk = AddPlayerPacket::new(uuid, username, entity_id, x as f32, y as f32, z as f32);
-    let _ = (yaw, pitch);
+    let mut pk = AddPlayerPacket::new(uuid, username, entity_id, x as f32, (y + 1.62) as f32, z as f32);
+    pk.yaw = yaw;
+    pk.pitch = pitch;
     broadcast_except(&self_data.rak, &self_data.players, Some(addr), pk.encode()).await;
 }
 
@@ -942,19 +969,16 @@ async fn broadcast_player_list_add(self_data: &OxideServer) {
 /// Keeps network throughput predictable.
 const DEFAULT_VIEW_DISTANCE: i32 = 8;
 
-/// Number of chunks sent per burst before yielding.
-/// Analogous to chunks-per-tick rate limiter.
-const CHUNKS_PER_BURST: usize = 4;
-
 async fn send_spawn_chunks(self_data: &OxideServer, addr: SocketAddr, cx: i32, cz: i32, radius: i32) {
-    // Select only chunks not previously sent to this player
-    let wanted: Vec<(i32, i32)> = {
+    let center_cx = cx >> 4;
+    let center_cz = cz >> 4;
+    let mut wanted: Vec<(i32, i32)> = {
         let mut players = self_data.players.write();
         let Some(state) = players.get_mut(&addr) else { return };
         let mut list = Vec::new();
         for dx in -radius..=radius {
             for dz in -radius..=radius {
-                let coord = ((cx >> 4) + dx, (cz >> 4) + dz);
+                let coord = (center_cx + dx, center_cz + dz);
                 if state.sent_chunks.insert(coord) {
                     list.push(coord);
                 }
@@ -964,6 +988,13 @@ async fn send_spawn_chunks(self_data: &OxideServer, addr: SocketAddr, cx: i32, c
     };
     if wanted.is_empty() { return; }
 
+    // Prioritize chunks closest to player spawn/position
+    wanted.sort_by_key(|&(x, z)| {
+        let dx = x - center_cx;
+        let dz = z - center_cz;
+        dx * dx + dz * dz
+    });
+
     let chunks: Vec<Vec<u8>> = {
         let mut world = self_data.world.write();
         wanted.iter()
@@ -972,12 +1003,10 @@ async fn send_spawn_chunks(self_data: &OxideServer, addr: SocketAddr, cx: i32, c
     };
 
     let total = chunks.len();
-    // Send chunks in separate batches to prevent client buffer overflows
-    // and reduce packet loss on mobile connections
     for (i, pk) in chunks.into_iter().enumerate() {
         send_raw(&self_data.rak, addr, BatchPacket::encode(&[pk])).await;
-        if (i + 1) % CHUNKS_PER_BURST == 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        if (i + 1) % 16 == 0 {
+            tokio::task::yield_now().await;
         }
     }
     debug!("Sent chunks to player {}: {} (radius {})", addr, total, radius);

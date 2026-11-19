@@ -135,7 +135,10 @@ fn test_world_generators() {
 
     assert_eq!(chunk_flat.get_block_id(0, 0, 0), 7, "y=0 should be bedrock in flat world");
     assert_eq!(chunk_flat.get_block_id(0, 1, 0), 3, "y=1 should be dirt in flat world");
-    assert_eq!(chunk_flat.get_block_id(0, 2, 0), 2, "y=2 should be grass in flat world");
+    assert_eq!(chunk_flat.get_block_id(0, 2, 0), 3, "y=2 should be dirt in flat world");
+    assert_eq!(chunk_flat.get_block_id(0, 3, 0), 2, "y=3 should be grass in flat world");
+    assert_eq!(chunk_flat.height_map[0], 4, "Height map for flat column should be 4");
+    assert_eq!(chunk_flat.biome_ids[0], 1, "Biome should be Plains (1)");
 
     let normal = NormalGenerator::new(12345);
     let mut chunk_normal = Chunk::new(0, 0);
@@ -182,4 +185,42 @@ fn test_packet_encode_decode() {
     assert_eq!(decoded.entity_unique_id, 1001);
     assert_eq!(decoded.entity_runtime_id, 1001);
     assert_eq!(decoded.difficulty, 1);
+
+    // FullChunkDataPacket with negative coordinates (ZigZag varint verification)
+    let chunk_pk = FullChunkDataPacket::new(-7, -12, vec![1, 2, 3, 4]);
+    let encoded = chunk_pk.encode();
+    let decoded = FullChunkDataPacket::decode(encoded);
+    assert_eq!(decoded.chunk_x, -7, "Negative chunk x must decode correctly");
+    assert_eq!(decoded.chunk_z, -12, "Negative chunk z must decode correctly");
+    assert_eq!(decoded.data, vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn test_zigzag_varint_negative_values() {
+    use oxide::utils::Binary;
+
+    let test_values = [0, -1, 1, -2, 2, -100, 100, -2147483648, 2147483647];
+    for &val in &test_values {
+        let bytes = Binary::write_var_int(val);
+        let mut offset = 0usize;
+        let decoded = Binary::read_var_int(&bytes, &mut offset).expect("VarInt decoding should succeed");
+        assert_eq!(decoded, val, "Round-trip VarInt mismatch for {}", val);
+        assert_eq!(offset, bytes.len(), "All bytes should be consumed");
+    }
+
+    // -1 in ZigZag is encoded as 1 (single byte 0x01)
+    let minus_one = Binary::write_var_int(-1);
+    assert_eq!(minus_one, vec![0x01], "-1 in ZigZag must encode as 1 single byte [0x01]");
+
+    // -2 in ZigZag is encoded as 3 (single byte 0x03)
+    let minus_two = Binary::write_var_int(-2);
+    assert_eq!(minus_two, vec![0x03], "-2 in ZigZag must encode as 1 single byte [0x03]");
+
+    let test_longs = [0i64, -1i64, 1i64, -100i64, i64::MIN, i64::MAX];
+    for &val in &test_longs {
+        let bytes = Binary::write_var_long(val);
+        let mut offset = 0usize;
+        let decoded = Binary::read_var_long(&bytes, &mut offset).expect("VarLong decoding should succeed");
+        assert_eq!(decoded, val, "Round-trip VarLong mismatch for {}", val);
+    }
 }

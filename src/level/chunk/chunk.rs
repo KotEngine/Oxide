@@ -19,12 +19,12 @@ impl Chunk {
         for _ in 0..MAX_SUBCHUNKS {
             sub_chunks.push(SubChunk::new());
         }
-        let height_map = vec![0u16; HEIGHTMAP_LEN];
+        let height_map = vec![256u16; HEIGHTMAP_LEN];
         Self {
             x,
             z,
             sub_chunks,
-            biome_ids: vec![0; BIOMES_LEN],
+            biome_ids: vec![1; BIOMES_LEN],
             height_map,
         }
     }
@@ -58,6 +58,47 @@ impl Chunk {
         self.set_block_data(x, y, z, data);
     }
 
+    pub fn get_sky_light(&self, x: usize, y: usize, z: usize) -> u8 {
+        let sy = y >> 4;
+        if sy >= MAX_SUBCHUNKS { return 15; }
+        self.sub_chunks[sy].get_sky_light(x, y & 0x0f, z)
+    }
+
+    pub fn set_sky_light(&mut self, x: usize, y: usize, z: usize, level: u8) {
+        let sy = y >> 4;
+        if sy >= MAX_SUBCHUNKS { return; }
+        self.sub_chunks[sy].set_sky_light(x, y & 0x0f, z, level);
+    }
+
+    pub fn recalculate_height_map(&mut self) {
+        for z in 0..16 {
+            for x in 0..16 {
+                let mut top = 0u16;
+                for y in (0..256).rev() {
+                    if self.get_block_id(x, y, z) != 0 {
+                        top = (y + 1) as u16;
+                        break;
+                    }
+                }
+                self.height_map[(z << 4) | x] = top;
+            }
+        }
+    }
+
+    pub fn populate_sky_light(&mut self) {
+        for z in 0..16 {
+            for x in 0..16 {
+                let top = self.height_map[(z << 4) | x] as usize;
+                for y in 0..top {
+                    self.set_sky_light(x, y, z, 0);
+                }
+                for y in top..256 {
+                    self.set_sky_light(x, y, z, 15);
+                }
+            }
+        }
+    }
+
     /// Number of subchunks to serialize:
     /// index of the highest non-empty subchunk + 1.
     pub fn sub_chunk_send_count(&self) -> usize {
@@ -89,18 +130,15 @@ impl Chunk {
     pub fn generate_flat(&mut self) {
         for x in 0..16 {
             for z in 0..16 {
-                for y in 0..3 {
-                    if y == 0 {
-                        self.set_block(x, y, z, 7, 0);
-                    } else if y < 2 {
-                        self.set_block(x, y, z, 3, 0);
-                    } else {
-                        self.set_block(x, y, z, 2, 0);
-                    }
-                }
-                self.height_map[(z << 4) | x] = 3;
+                self.set_block(x, 0, z, 7, 0); // Bedrock
+                self.set_block(x, 1, z, 3, 0); // Dirt
+                self.set_block(x, 2, z, 3, 0); // Dirt
+                self.set_block(x, 3, z, 2, 0); // Grass
+                self.height_map[(z << 4) | x] = 4;
+                self.biome_ids[(z << 4) | x] = 1; // Plains
             }
         }
+        self.populate_sky_light();
     }
 }
 
@@ -125,14 +163,15 @@ mod tests {
 
         assert_eq!(data[0], 1, "Subchunk section count");
         assert_eq!(data[1], 0, "Subchunk version");
-        // Block (0,0,0) = bedrock(7), (0,1,0) = dirt(3), (0,2,0) = grass(2)
+        // Block (0,0,0) = bedrock(7), (0,1,0) = dirt(3), (0,2,0) = dirt(3), (0,3,0) = grass(2)
         assert_eq!(data[2], 7);
         assert_eq!(data[3], 3);
-        assert_eq!(data[4], 2);
+        assert_eq!(data[4], 3);
+        assert_eq!(data[5], 2);
 
-        // Heightmap: column 0 has height 3 (little-endian)
+        // Heightmap: column 0 has height 4 (little-endian)
         let hm = 1 + sub * 10241;
-        assert_eq!(&data[hm..hm + 2], &[3, 0], "Column height");
+        assert_eq!(&data[hm..hm + 2], &[4, 0], "Column height");
         // Trailing bytes: border count and extra data count
         assert_eq!(&data[data.len() - 2..], &[0, 0]);
     }
