@@ -3,12 +3,16 @@ use crate::level::generator::noise::OctaveNoise;
 use crate::level::generator::biome::{Biome, BiomeType};
 use crate::level::generator::populator::{
     CavePopulator, GroundCoverPopulator, OrePopulator, TreePopulator,
+    LakePopulator, DungeonPopulator,
 };
 use super::Generator;
 
 pub struct NormalGenerator {
     height_noise: OctaveNoise,
     cave_populator: CavePopulator,
+    water_lake: LakePopulator,
+    lava_lake: LakePopulator,
+    dungeon_populator: DungeonPopulator,
     ground_cover: GroundCoverPopulator,
     ores: Vec<OrePopulator>,
     seed: u64,
@@ -34,6 +38,9 @@ impl NormalGenerator {
         Self {
             height_noise: OctaveNoise::new(seed, 8),
             cave_populator: CavePopulator::new(seed),
+            water_lake: LakePopulator::water(),
+            lava_lake: LakePopulator::lava(),
+            dungeon_populator: DungeonPopulator::new(),
             ground_cover: GroundCoverPopulator::new(),
             ores,
             seed,
@@ -131,7 +138,14 @@ impl Generator for NormalGenerator {
         // 1. Underground Cave carving
         self.cave_populator.populate(chunk);
 
-        // 2. Ore veins
+        // 2. Underground Dungeons
+        self.dungeon_populator.populate(chunk);
+
+        // 3. Lakes (Water & Lava)
+        self.water_lake.populate(chunk);
+        self.lava_lake.populate(chunk);
+
+        // 4. Ore veins
         for ore in &self.ores {
             ore.populate(chunk);
         }
