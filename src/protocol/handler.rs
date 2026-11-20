@@ -88,6 +88,8 @@ pub struct PlayerState {
     pub open_container: Option<(i32, i32, i32)>,
     pub dimension: i32,
     pub portal_ticks: u32,
+    pub effects: crate::entity::effect::EffectContainer,
+    pub food_tick_timer: u32,
 }
 
 impl Default for PlayerState {
@@ -119,6 +121,8 @@ impl PlayerState {
             open_container: None,
             dimension: 0,
             portal_ticks: 0,
+            effects: crate::entity::effect::EffectContainer::new(),
+            food_tick_timer: 0,
         }
     }
 }

@@ -2,18 +2,20 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::collections::HashMap;
 use parking_lot::RwLock;
+
 use crate::level::World;
 use crate::protocol::handler::PlayerState;
 use crate::raknet::RakNetServer;
 use crate::protocol::packets::{
     AddEntityPacket, MoveEntityPacket, LevelEventPacket, LevelSoundEventPacket,
     ExplodePacket, UpdateBlockPacket, AddItemEntityPacket, TakeItemEntityPacket,
-    EntityEventPacket,
+    EntityEventPacket, RemoveEntityPacket, SetHealthPacket, AnimatePacket,
     level_event, update_block,
 };
 use crate::protocol::packet::DataPacket;
 use crate::protocol::batch::BatchPacket;
 use crate::protocol::types::Item;
+use crate::entity::loot::LootTable;
 
 #[derive(Debug, Clone)]
 pub struct ActiveEntity {
@@ -36,6 +38,44 @@ pub struct ActiveEntity {
     pub item_drop: Option<Item>,
     pub pickup_delay: u32,
     pub attack_cooldown: u32,
+    pub dead_ticks: u32,
+    pub is_dead: bool,
+    pub on_fire_ticks: u32,
+    pub killer_eid: Option<i64>,
+}
+
+/// Calculate facing yaw angle matching Bedrock format.
+pub fn calculate_yaw(mx: f64, mz: f64) -> f32 {
+    let yaw = if mz.abs() < 1e-6 {
+        if mx < 0.0 { -90.0 } else { 90.0 }
+    } else if mx >= 0.0 && mz > 0.0 {
+        (mx / mz).atan().to_degrees()
+    } else if mx >= 0.0 && mz < 0.0 {
+        180.0 - (mx / mz.abs()).atan().to_degrees()
+    } else if mx < 0.0 && mz < 0.0 {
+        -(180.0 - (mx / mz).atan().to_degrees())
+    } else if mx < 0.0 && mz > 0.0 {
+        -(mx.abs() / mz).atan().to_degrees()
+    } else {
+        0.0
+    };
+    (-yaw) as f32
+}
+
+/// Calculate look pitch angle from origin to target.
+pub fn calculate_pitch(from_x: f64, from_y: f64, from_z: f64, to_x: f64, to_y: f64, to_z: f64) -> f32 {
+    let dist = ((to_x - from_x).powi(2) + (to_y - from_y).powi(2) + (to_z - from_z).powi(2)).sqrt();
+    if dist < 1e-6 {
+        return 0.0;
+    }
+    let height = to_y - from_y;
+    if height > 0.0 {
+        -(height / dist).asin().to_degrees() as f32
+    } else if height < 0.0 {
+        (-height / dist).asin().to_degrees() as f32
+    } else {
+        0.0
+    }
 }
 
 pub struct EntityManager {
@@ -89,6 +129,10 @@ impl EntityManager {
             item_drop: None,
             pickup_delay: 0,
             attack_cooldown: 0,
+            dead_ticks: 0,
+            is_dead: false,
+            on_fire_ticks: 0,
+            killer_eid: None,
         };
 
         self.entities.write().insert(entity_id, ent);
@@ -127,6 +171,10 @@ impl EntityManager {
             item_drop: None,
             pickup_delay: 0,
             attack_cooldown: 0,
+            dead_ticks: 0,
+            is_dead: false,
+            on_fire_ticks: 0,
+            killer_eid: None,
         };
 
         self.entities.write().insert(entity_id, ent);
@@ -173,6 +221,10 @@ impl EntityManager {
             item_drop: None,
             pickup_delay: 0,
             attack_cooldown: 0,
+            dead_ticks: 0,
+            is_dead: false,
+            on_fire_ticks: 0,
+            killer_eid: None,
         };
 
         self.entities.write().insert(entity_id, ent);
@@ -219,6 +271,10 @@ impl EntityManager {
             item_drop: Some(item.clone()),
             pickup_delay: 10,
             attack_cooldown: 0,
+            dead_ticks: 0,
+            is_dead: false,
+            on_fire_ticks: 0,
+            killer_eid: None,
         };
 
         self.entities.write().insert(entity_id, ent);
@@ -234,23 +290,63 @@ impl EntityManager {
         &self,
         entity_id: i64,
         damage: f32,
-        _attacker_eid: i64,
+        attacker_eid: i64,
+        attacker_pos: Option<(f64, f64, f64)>,
         rak: &RakNetServer,
         players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     ) -> bool {
         let mut ent_guard = self.entities.write();
         if let Some(ent) = ent_guard.get_mut(&entity_id) {
+            if ent.is_dead {
+                return false;
+            }
             ent.health -= damage;
-            let dead = ent.health <= 0.0;
 
-            let anim = EntityEventPacket::new(entity_id, 2); // Hurt animation
-            let sound = LevelSoundEventPacket::new(level_event::SOUND_HIT, ent.x as f32, ent.y as f32, ent.z as f32);
-            drop(ent_guard);
+            // Knockback calculation
+            if let Some((ax, _ay, az)) = attacker_pos {
+                let dx = ent.x - ax;
+                let dz = ent.z - az;
+                let f = (dx * dx + dz * dz).sqrt();
+                if f > 0.0 {
+                    let inv_f = 1.0 / f;
+                    let base = 0.4f32;
+                    ent.motion_x /= 2.0;
+                    ent.motion_y /= 2.0;
+                    ent.motion_z /= 2.0;
+                    ent.motion_x += (dx * inv_f) as f32 * base;
+                    ent.motion_y += base;
+                    ent.motion_z += (dz * inv_f) as f32 * base;
+                    if ent.motion_y > base {
+                        ent.motion_y = base;
+                    }
+                }
+            }
 
-            broadcast_to_all(rak, players, anim.encode()).await;
-            broadcast_to_all(rak, players, sound.encode()).await;
+            if ent.health <= 0.0 {
+                ent.is_dead = true;
+                ent.dead_ticks = 0;
+                ent.killer_eid = Some(attacker_eid);
 
-            return dead;
+                let death_anim = EntityEventPacket::new(entity_id, 3); // Death animation
+                let death_snd = LevelSoundEventPacket::new(level_event::SOUND_DEATH, ent.x as f32, ent.y as f32, ent.z as f32);
+                let mv = MoveEntityPacket::new(ent.id, ent.x as f32, ent.y as f32, ent.z as f32, ent.yaw, ent.pitch);
+                drop(ent_guard);
+
+                broadcast_to_all(rak, players, death_anim.encode()).await;
+                broadcast_to_all(rak, players, death_snd.encode()).await;
+                broadcast_to_all(rak, players, mv.encode()).await;
+                return true;
+            } else {
+                let anim = EntityEventPacket::new(entity_id, 2); // Hurt animation
+                let sound = LevelSoundEventPacket::new(level_event::SOUND_HIT, ent.x as f32, ent.y as f32, ent.z as f32);
+                let mv = MoveEntityPacket::new(ent.id, ent.x as f32, ent.y as f32, ent.z as f32, ent.yaw, ent.pitch);
+                drop(ent_guard);
+
+                broadcast_to_all(rak, players, anim.encode()).await;
+                broadcast_to_all(rak, players, sound.encode()).await;
+                broadcast_to_all(rak, players, mv.encode()).await;
+                return false;
+            }
         }
         false
     }
@@ -275,6 +371,8 @@ impl EntityManager {
         let mut drops: Vec<(i32, u32, f64, f64, f64)> = Vec::new();
         let mut teleports: Vec<(i64, f64, f64, f64)> = Vec::new();
         let mut player_pickups: Vec<(SocketAddr, i64, Item)> = Vec::new();
+        let mut player_attacks: Vec<(SocketAddr, f32, f64, f64)> = Vec::new(); // addr, damage, attacker_x, attacker_z
+        let mut skeleton_arrows: Vec<(f64, f64, f64, f32, f32, f32, f32, f32, i64)> = Vec::new(); // x,y,z, vx,vy,vz, yaw,pitch, eid
 
         // Snapshot current player positions
         let player_snapshots: Vec<(SocketAddr, i64, f64, f64, f64, i32)> = {
@@ -284,6 +382,29 @@ impl EntityManager {
 
         for ent in &mut list {
             ent.lifetime += 1;
+
+            // Handle dead entities (despawn animation timer)
+            if ent.is_dead {
+                ent.dead_ticks += 1;
+                if ent.dead_ticks >= 20 {
+                    to_remove.push(ent.id);
+                    // Broadcast remove packet
+                    let remove_pk = RemoveEntityPacket { entity_runtime_id: ent.id };
+                    broadcast_to_all(rak, players, remove_pk.encode()).await;
+
+                    // Generate loot drops
+                    let generated_drops = LootTable::get_drops(
+                        ent.entity_type,
+                        ent.killer_eid.is_some(),
+                        ent.on_fire_ticks > 0,
+                        0,
+                    );
+                    for item in generated_drops {
+                        drops.push((item.id, item.count, ent.x, ent.y, ent.z));
+                    }
+                }
+                continue;
+            }
 
             // 1. TNT Fuse Logic
             if let Some(ref mut fuse) = ent.fuse {
@@ -318,19 +439,26 @@ impl EntityManager {
 
                 // Check collision with players
                 let mut hit_player_opt = None;
-                for &(p_addr, p_eid, px, py, pz, _gm) in &player_snapshots {
+                for &(p_addr, p_eid, px, py, pz, gm) in &player_snapshots {
                     if Some(p_eid) == ent.owner_eid && ent.lifetime < 5 {
                         continue; // Cannot hit shooter immediately
                     }
                     let dist_sq = (px - ent.x).powi(2) + (py + 1.0 - ent.y).powi(2) + (pz - ent.z).powi(2);
                     if dist_sq < 1.44 {
-                        hit_player_opt = Some((p_addr, p_eid));
+                        hit_player_opt = Some((p_addr, p_eid, gm));
                         break;
                     }
                 }
 
                 if block_hit || hit_player_opt.is_some() || ent.lifetime > 200 {
                     to_remove.push(ent.id);
+
+                    if let Some((p_addr, _p_eid, gm)) = hit_player_opt {
+                        if gm == 0 && ent.entity_type == 80 {
+                            // Arrow hit player in survival
+                            player_attacks.push((p_addr, 3.0, ent.x, ent.z));
+                        }
+                    }
 
                     if ent.entity_type == 87 {
                         // Ender pearl teleports owner
@@ -373,50 +501,137 @@ impl EntityManager {
                 }
             }
 
-            // 4. Mob AI & Physics (Zombie 32, Skeleton 34, Creeper 33, Spider 35, Cow 11, Pig 12, Sheep 13, Chicken 10)
-            let is_mob = ent.entity_type == 32 || ent.entity_type == 33 || ent.entity_type == 34
-                || ent.entity_type == 35 || ent.entity_type == 11 || ent.entity_type == 12
-                || ent.entity_type == 13 || ent.entity_type == 10;
+            // 4. Mob AI & Physics
+            let is_hostile = ent.entity_type == 32 || ent.entity_type == 33 || ent.entity_type == 34
+                || ent.entity_type == 35 || ent.entity_type == 36 || ent.entity_type == 38
+                || ent.entity_type == 41 || ent.entity_type == 42 || ent.entity_type == 47;
 
-            if is_mob {
-                // Find nearest player in survival
+            let is_passive = ent.entity_type == 10 || ent.entity_type == 11 || ent.entity_type == 12 || ent.entity_type == 13;
+
+            if is_hostile || is_passive {
+                // Find nearest player in survival within 36 blocks (willMove check)
                 let mut nearest = None;
-                let mut min_dist_sq = 256.0f64; // 16 block sight range
+                let mut min_dist_sq = 36.0 * 36.0;
 
-                for &(_p_addr, p_eid, px, py, pz, gm) in &player_snapshots {
+                for &(p_addr, p_eid, px, py, pz, gm) in &player_snapshots {
                     if gm == 0 { // Survival
                         let d_sq = (px - ent.x).powi(2) + (pz - ent.z).powi(2);
                         if d_sq < min_dist_sq {
                             min_dist_sq = d_sq;
-                            nearest = Some((p_eid, px, py, pz, d_sq.sqrt()));
+                            nearest = Some((p_addr, p_eid, px, py, pz, d_sq.sqrt()));
                         }
                     }
                 }
 
-                if let Some((_target_id, tx, _ty, tz, dist)) = nearest {
-                    let is_hostile = ent.entity_type == 32 || ent.entity_type == 33
-                        || ent.entity_type == 34 || ent.entity_type == 35;
-
-                    if is_hostile {
+                if is_hostile {
+                    if let Some((target_addr, _target_id, tx, ty, tz, dist)) = nearest {
                         let dx = tx - ent.x;
                         let dz = tz - ent.z;
-                        let speed = 0.22f32;
-                        ent.motion_x = ((dx / dist) as f32) * speed;
-                        ent.motion_z = ((dz / dist) as f32) * speed;
-                        ent.yaw = ((-dx).atan2(dz).to_degrees()) as f32;
+                        ent.yaw = calculate_yaw(dx, dz);
+                        ent.pitch = calculate_pitch(ent.x, ent.y + 1.6, ent.z, tx, ty + 1.0, tz);
 
-                        // Creeper flash & explode within 3 blocks
-                        if ent.entity_type == 33 && dist < 3.0 {
-                            if let Some(ref mut fuse) = ent.fuse {
-                                if *fuse > 0 {
-                                    *fuse -= 1;
-                                } else {
-                                    to_remove.push(ent.id);
-                                    explosions.push((ent.x, ent.y, ent.z));
-                                    continue;
+                        match ent.entity_type {
+                            // Zombie (32) & Husk (47)
+                            32 | 47 => {
+                                let speed = 0.23f32;
+                                ent.motion_x = ((dx / dist) as f32) * speed;
+                                ent.motion_z = ((dz / dist) as f32) * speed;
+
+                                // Melee attack within 1.5 blocks
+                                if dist <= 1.5 && ent.attack_cooldown == 0 {
+                                    ent.attack_cooldown = 20; // 1 second cooldown
+                                    player_attacks.push((target_addr, 3.0, ent.x, ent.z));
                                 }
                             }
+
+                            // Creeper (33)
+                            33 => {
+                                if dist > 2.5 {
+                                    let speed = 0.22f32;
+                                    ent.motion_x = ((dx / dist) as f32) * speed;
+                                    ent.motion_z = ((dz / dist) as f32) * speed;
+                                }
+
+                                if let Some(ref mut fuse) = ent.fuse {
+                                    if dist <= 3.0 {
+                                        if *fuse == 30 {
+                                            // Play ignite sound
+                                            let ignite = LevelSoundEventPacket::new(level_event::SOUND_IGNITE, ent.x as f32, ent.y as f32, ent.z as f32);
+                                            broadcast_to_all(rak, players, ignite.encode()).await;
+                                        }
+                                        if *fuse > 0 {
+                                            *fuse -= 1;
+                                        } else {
+                                            to_remove.push(ent.id);
+                                            explosions.push((ent.x, ent.y, ent.z));
+                                            continue;
+                                        }
+                                    } else if dist > 6.0 && *fuse < 30 {
+                                        // Player fled - defuse slowly
+                                        *fuse += 1;
+                                    }
+                                }
+                            }
+
+                            // Skeleton (34)
+                            34 => {
+                                if dist > 14.0 {
+                                    let speed = 0.20f32;
+                                    ent.motion_x = ((dx / dist) as f32) * speed;
+                                    ent.motion_z = ((dz / dist) as f32) * speed;
+                                } else if dist < 4.0 {
+                                    // Back away
+                                    let speed = 0.15f32;
+                                    ent.motion_x = -((dx / dist) as f32) * speed;
+                                    ent.motion_z = -((dz / dist) as f32) * speed;
+                                }
+
+                                // Ranged attack with bow every 50 ticks
+                                if dist <= 15.0 && dist >= 3.0 && ent.attack_cooldown == 0 {
+                                    ent.attack_cooldown = 50;
+                                    let shoot_vx = ((dx / dist) * 1.5) as f32;
+                                    let shoot_vy = (((ty + 0.5 - ent.y) / dist) * 1.5 + 0.1) as f32;
+                                    let shoot_vz = ((dz / dist) * 1.5) as f32;
+                                    skeleton_arrows.push((
+                                        ent.x, ent.y + 1.6, ent.z,
+                                        shoot_vx, shoot_vy, shoot_vz,
+                                        ent.yaw, ent.pitch, ent.id,
+                                    ));
+                                }
+                            }
+
+                            // Spider (35)
+                            35 => {
+                                let speed = 0.28f32;
+                                ent.motion_x = ((dx / dist) as f32) * speed;
+                                ent.motion_z = ((dz / dist) as f32) * speed;
+
+                                // Leap when within 3 blocks
+                                if dist <= 3.0 && dist > 1.2 && ent.y <= floor_level(world, ent.x, ent.y, ent.z) + 0.1 {
+                                    ent.motion_y = 0.35;
+                                }
+
+                                if dist <= 1.5 && ent.attack_cooldown == 0 {
+                                    ent.attack_cooldown = 20;
+                                    player_attacks.push((target_addr, 2.0, ent.x, ent.z));
+                                }
+                            }
+
+                            _ => {
+                                let speed = 0.20f32;
+                                ent.motion_x = ((dx / dist) as f32) * speed;
+                                ent.motion_z = ((dz / dist) as f32) * speed;
+                            }
                         }
+                    }
+                } else if is_passive {
+                    // Random wander every ~60 ticks
+                    if ent.lifetime % 60 == 0 && rand::random::<f32>() < 0.4 {
+                        let angle = rand::random::<f64>() * (std::f64::consts::PI * 2.0);
+                        let speed = 0.10f32;
+                        ent.motion_x = (angle.cos() as f32) * speed;
+                        ent.motion_z = (angle.sin() as f32) * speed;
+                        ent.yaw = calculate_yaw(ent.motion_x as f64, ent.motion_z as f64);
                     }
                 }
 
@@ -426,16 +641,7 @@ impl EntityManager {
             }
 
             // 5. Gravity & Floor Collision
-            let floor_y = {
-                let w = world.read();
-                let bx = ent.x.floor() as i32;
-                let bz = ent.z.floor() as i32;
-                let mut check_y = ent.y.floor() as i32;
-                while check_y >= 0 && w.get_block_id_opt(bx, check_y, bz) == 0 {
-                    check_y -= 1;
-                }
-                (check_y + 1) as f64
-            };
+            let floor_y = floor_level(world, ent.x, ent.y, ent.z);
 
             if ent.y > floor_y {
                 ent.motion_y = (ent.motion_y - 0.04).max(-1.5);
@@ -451,8 +657,50 @@ impl EntityManager {
 
             ent.x += ent.motion_x as f64;
             ent.z += ent.motion_z as f64;
-            ent.motion_x *= 0.90;
-            ent.motion_z *= 0.90;
+            ent.motion_x *= 0.85;
+            ent.motion_z *= 0.85;
+        }
+
+        // Apply player attacks from hostile mobs
+        for (target_addr, damage, ax, az) in player_attacks {
+            let (target_eid, current_hp) = {
+                let p = players.read();
+                if let Some(s) = p.get(&target_addr) {
+                    (s.entity_id, s.health)
+                } else {
+                    continue;
+                }
+            };
+
+            let new_hp = (current_hp as f32 - damage).max(0.0) as u32;
+            {
+                let mut p = players.write();
+                if let Some(s) = p.get_mut(&target_addr) {
+                    s.health = new_hp;
+                }
+            }
+
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            let batch = BatchPacket::encode(&[hp_pk.encode()]);
+            rak.send_encapsulated(target_addr, batch, true).await;
+
+            let anim = AnimatePacket::new(1, target_eid); // Hurt animation
+            let hurt_snd = LevelSoundEventPacket::new(level_event::SOUND_HIT, ax as f32, 64.0, az as f32);
+            broadcast_to_all(rak, players, anim.encode()).await;
+            broadcast_to_all(rak, players, hurt_snd.encode()).await;
+        }
+
+        // Spawn skeleton arrows
+        for (sx, sy, sz, vx, vy, vz, yaw, pitch, owner_id) in skeleton_arrows {
+            let arrow_eid = {
+                let mut eid = next_eid.write();
+                let id = *eid;
+                *eid += 1;
+                id
+            };
+            self.spawn_projectile(arrow_eid, 80, sx, sy, sz, vx, vy, vz, yaw, pitch, owner_id, rak, players).await;
+            let shoot_snd = LevelSoundEventPacket::new(level_event::SOUND_BOW, sx as f32, sy as f32, sz as f32);
+            broadcast_to_all(rak, players, shoot_snd.encode()).await;
         }
 
         // Apply explosions
@@ -532,12 +780,33 @@ impl EntityManager {
 
         // Broadcast motion updates
         for ent in &list {
-            if !to_remove.contains(&ent.id) && (ent.motion_x.abs() > 0.01 || ent.motion_z.abs() > 0.01) {
+            if !to_remove.contains(&ent.id) && !ent.is_dead && (ent.motion_x.abs() > 0.01 || ent.motion_z.abs() > 0.01) {
                 let mv = MoveEntityPacket::new(ent.id, ent.x as f32, ent.y as f32, ent.z as f32, ent.yaw, ent.pitch);
                 broadcast_to_all(rak, players, mv.encode()).await;
             }
         }
+
+        // Write back updated entities into the map
+        {
+            let mut guard = self.entities.write();
+            for ent in list {
+                if !to_remove.contains(&ent.id) {
+                    guard.insert(ent.id, ent);
+                }
+            }
+        }
     }
+}
+
+fn floor_level(world: &Arc<RwLock<World>>, x: f64, y: f64, z: f64) -> f64 {
+    let w = world.read();
+    let bx = x.floor() as i32;
+    let bz = z.floor() as i32;
+    let mut check_y = y.floor() as i32;
+    while check_y >= 0 && w.get_block_id_opt(bx, check_y, bz) == 0 {
+        check_y -= 1;
+    }
+    (check_y + 1) as f64
 }
 
 async fn broadcast_to_all(

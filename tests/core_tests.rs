@@ -551,3 +551,78 @@ fn test_dimension_command_and_packets() {
     pk.encode_payload(&mut stream);
     assert!(stream.len() > 0);
 }
+
+#[test]
+fn test_mob_ai_math_and_yaw_pitch() {
+    use oxide::entity::manager::{calculate_yaw, calculate_pitch};
+
+    // Yaw angles: 0 is south (+z), 90 is west (-x), 180 is north (-z), 270 is east (+x)
+    let yaw_north = calculate_yaw(0.0, -10.0);
+    assert!((yaw_north.abs() - 180.0).abs() < 1.0 || yaw_north.abs() < 1.0);
+
+    let yaw_east = calculate_yaw(10.0, 0.0);
+    assert_eq!(yaw_east, -90.0);
+
+    let yaw_west = calculate_yaw(-10.0, 0.0);
+    assert_eq!(yaw_west, 90.0);
+
+    // Pitch angles: looking straight ahead is 0, up is negative, down is positive
+    let pitch_level = calculate_pitch(0.0, 64.0, 0.0, 10.0, 64.0, 0.0);
+    assert_eq!(pitch_level, 0.0);
+
+    let pitch_up = calculate_pitch(0.0, 64.0, 0.0, 0.0, 74.0, 0.0);
+    assert!(pitch_up < -80.0);
+
+    let pitch_down = calculate_pitch(0.0, 64.0, 0.0, 0.0, 54.0, 0.0);
+    assert!(pitch_down > 80.0);
+}
+
+#[test]
+fn test_mob_loot_tables_vanilla_parity() {
+    use oxide::entity::LootTable;
+
+    // Test Zombie drops (Rotten flesh: 367)
+    let zombie_drops = LootTable::get_drops(32, true, false, 0);
+    for item in &zombie_drops {
+        assert!(item.id == 367 || item.id == 265 || item.id == 391 || item.id == 392);
+    }
+
+    // Test Skeleton drops (Arrow: 262, Bone: 352)
+    let skeleton_drops = LootTable::get_drops(34, true, false, 0);
+    for item in &skeleton_drops {
+        assert!(item.id == 262 || item.id == 352);
+    }
+
+    // Test Wither drops guaranteed Nether Star (399)
+    let wither_drops = LootTable::get_drops(52, true, false, 0);
+    assert_eq!(wither_drops.len(), 1);
+    assert_eq!(wither_drops[0].id, 399);
+
+    // Test Evoker drops guaranteed Totem of Undying (449)
+    let evoker_drops = LootTable::get_drops(58, true, false, 0);
+    assert!(evoker_drops.iter().any(|i| i.id == 449));
+}
+
+#[test]
+fn test_effect_container_and_mechanics() {
+    use oxide::entity::{EffectContainer, ActiveEffect, effect_id};
+
+    let mut container = EffectContainer::new();
+    container.add_effect(ActiveEffect::new(effect_id::SPEED, 200, 1));
+    assert!(container.has_effect(effect_id::SPEED));
+    assert_eq!(container.speed_multiplier(), 1.4); // Level 2 speed (+40%)
+
+    // Add absorption
+    container.add_effect(ActiveEffect::new(effect_id::ABSORPTION, 1000, 0));
+    assert_eq!(container.absorption_hp, 4.0);
+
+    // Add fire resistance
+    container.add_effect(ActiveEffect::new(effect_id::FIRE_RESISTANCE, 500, 0));
+    assert!(container.has_fire_resistance());
+
+    // Tick effects
+    let (expired, _) = container.tick();
+    assert!(expired.is_empty());
+    assert_eq!(container.get_effect(effect_id::SPEED).unwrap().duration, 199);
+}
+

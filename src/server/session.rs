@@ -31,6 +31,7 @@ pub struct OxideServer {
     pub permission_manager: Arc<crate::permission::PermissionManager>,
     pub projectile_manager: Arc<crate::entity::ProjectileManager>,
     pub entity_manager: Arc<crate::entity::EntityManager>,
+    pub mob_spawner: Arc<crate::entity::MobSpawner>,
     pub tile_manager: Arc<crate::tile::TileManager>,
     pub liquid_sim: Arc<crate::level::LiquidSimulation>,
     pub weather: Arc<crate::level::WeatherSimulation>,
@@ -95,6 +96,7 @@ impl OxideServer {
             permission_manager,
             projectile_manager: Arc::new(crate::entity::ProjectileManager::new()),
             entity_manager: Arc::new(crate::entity::EntityManager::new()),
+            mob_spawner: Arc::new(crate::entity::MobSpawner::new()),
             tile_manager: Arc::new(crate::tile::TileManager::new()),
             liquid_sim: Arc::new(crate::level::LiquidSimulation::new()),
             weather: Arc::new(crate::level::WeatherSimulation::new()),
@@ -119,6 +121,7 @@ impl OxideServer {
             scheduler: self.scheduler.clone(),
             projectile_manager: self.projectile_manager.clone(),
             entity_manager: self.entity_manager.clone(),
+            mob_spawner: self.mob_spawner.clone(),
             tile_manager: self.tile_manager.clone(),
             crafting_manager: self.crafting_manager.clone(),
             liquid_sim: self.liquid_sim.clone(),
@@ -584,6 +587,7 @@ struct TickHandles {
     scheduler: Arc<crate::scheduler::Scheduler>,
     projectile_manager: Arc<crate::entity::ProjectileManager>,
     entity_manager: Arc<crate::entity::EntityManager>,
+    mob_spawner: Arc<crate::entity::MobSpawner>,
     tile_manager: Arc<crate::tile::TileManager>,
     crafting_manager: Arc<crate::inventory::CraftingManager>,
     liquid_sim: Arc<crate::level::LiquidSimulation>,
@@ -611,6 +615,16 @@ async fn tick_loop(h: TickHandles) {
 
         // Ticking active entities (every tick)
         h.entity_manager.tick(&h.world, &h.players, &h.rak, &h.next_entity_id).await;
+
+        // Ticking player potion effects (every tick)
+        tick_player_effects(&h.players, &h.rak).await;
+
+        // Ticking mob spawner (every 100 ticks = 5 seconds)
+        if tick_counter % 100 == 0 {
+            h.mob_spawner.tick(0, &h.world, &h.players, &h.entity_manager, &h.rak, &h.next_entity_id).await;
+            h.mob_spawner.tick(1, &h.nether_world, &h.players, &h.entity_manager, &h.rak, &h.next_entity_id).await;
+            h.mob_spawner.tick(2, &h.end_world, &h.players, &h.entity_manager, &h.rak, &h.next_entity_id).await;
+        }
 
         // Ticking weather simulation (every tick)
         h.weather.tick(&h.rak, &h.players).await;
@@ -645,48 +659,94 @@ async fn tick_loop(h: TickHandles) {
     }
 }
 
+async fn tick_player_effects(
+    players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
+    rak: &RakNetServer,
+) {
+    let mut effect_updates: Vec<(SocketAddr, i64, u32, Vec<u8>)> = Vec::new();
+
+    {
+        let mut p = players.write();
+        for (addr, s) in p.iter_mut() {
+            if !s.logged_in || s.gamemode != 0 {
+                continue;
+            }
+            let (expired, hp_delta) = s.effects.tick();
+            let mut health_changed = false;
+            if hp_delta > 0.0 {
+                s.health = (s.health + hp_delta as u32).min(20);
+                health_changed = true;
+            } else if hp_delta < 0.0 {
+                let dmg = (-hp_delta) as u32;
+                s.health = s.health.saturating_sub(dmg).max(1); // Poison cannot kill
+                health_changed = true;
+            }
+
+            if health_changed || !expired.is_empty() {
+                effect_updates.push((*addr, s.entity_id, s.health, expired));
+            }
+        }
+    }
+
+    for (addr, eid, hp, expired) in effect_updates {
+        let hp_pk = SetHealthPacket::new(hp as i32);
+        let mut pk_batch = vec![hp_pk.encode()];
+
+        for eff_id in expired {
+            let remove_eff = MobEffectPacket {
+                entity_runtime_id: eid,
+                event_id: 3, // EVENT_REMOVE
+                effect_id: eff_id as i32,
+                amplifier: 0,
+                particles: false,
+                duration: 0,
+            };
+            pk_batch.push(remove_eff.encode());
+        }
+
+        let batch = BatchPacket::encode(&pk_batch);
+        rak.send_encapsulated(addr, batch, true).await;
+    }
+}
+
 async fn tick_player_food_and_health(
     players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
     rak: &RakNetServer,
 ) {
-    let list: Vec<(SocketAddr, u32, u32, f32)> = {
-        let p = players.read();
-        p.iter()
-            .filter(|(_, s)| s.logged_in && s.gamemode == 0) // Survival only
-            .map(|(a, s)| (*a, s.health, s.food_level, s.food_saturation))
-            .collect()
-    };
+    let mut updates: Vec<(SocketAddr, i64, u32, u32, f32)> = Vec::new();
 
-    for (addr, health, food, sat) in list {
-        if food >= 18 && health < 20 {
-            // Natural regeneration
-            let new_hp = (health + 1).min(20);
-            let new_food = if sat > 0.0 { food } else { food.saturating_sub(1) };
-            let new_sat = (sat - 1.0).max(0.0);
-            {
-                let mut p = players.write();
-                if let Some(s) = p.get_mut(&addr) {
-                    s.health = new_hp;
-                    s.food_level = new_food;
-                    s.food_saturation = new_sat;
-                }
+    {
+        let mut p = players.write();
+        for (addr, s) in p.iter_mut() {
+            if !s.logged_in || s.gamemode != 0 {
+                continue;
             }
-            let hp_pk = SetHealthPacket::new(new_hp as i32);
-            let batch = BatchPacket::encode(&[hp_pk.encode()]);
-            rak.send_encapsulated(addr, batch, true).await;
-        } else if food == 0 && health > 1 {
-            // Starvation damage
-            let new_hp = health.saturating_sub(1);
-            {
-                let mut p = players.write();
-                if let Some(s) = p.get_mut(&addr) {
-                    s.health = new_hp;
+
+            if s.food_level >= 18 && s.health < 20 {
+                s.health = (s.health + 1).min(20);
+                if s.food_saturation > 0.0 {
+                    s.food_saturation = (s.food_saturation - 1.0).max(0.0);
+                } else {
+                    s.food_level = s.food_level.saturating_sub(1);
                 }
+                updates.push((*addr, s.entity_id, s.health, s.food_level, s.food_saturation));
+            } else if s.food_level == 0 && s.health > 1 {
+                s.health = s.health.saturating_sub(1);
+                updates.push((*addr, s.entity_id, s.health, s.food_level, s.food_saturation));
             }
-            let hp_pk = SetHealthPacket::new(new_hp as i32);
-            let batch = BatchPacket::encode(&[hp_pk.encode()]);
-            rak.send_encapsulated(addr, batch, true).await;
         }
+    }
+
+    for (addr, eid, health, food, sat) in updates {
+        let hp_pk = SetHealthPacket::new(health as i32);
+        let mut attrs_pk = UpdateAttributesPacket::new(eid);
+        attrs_pk.attributes = vec![
+            Attribute::health(health as f32),
+            Attribute::hunger(food as f32),
+            Attribute::food_saturation(sat),
+        ];
+        let batch = BatchPacket::encode(&[hp_pk.encode(), attrs_pk.encode()]);
+        rak.send_encapsulated(addr, batch, true).await;
     }
 }
 
@@ -911,6 +971,8 @@ fn clone_state(s: &PlayerState) -> PlayerState {
         open_container: s.open_container,
         dimension: s.dimension,
         portal_ticks: s.portal_ticks,
+        effects: s.effects.clone(),
+        food_tick_timer: s.food_tick_timer,
     }
 }
 
@@ -1420,11 +1482,8 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 let total_damage = base_damage + bonus;
                 let attacker_eid = self_data.players.read().get(&addr).map(|s| s.entity_id).unwrap_or(0);
 
-                let killed = self_data.entity_manager.damage_entity(interact.target, total_damage, attacker_eid, &self_data.rak, &self_data.players).await;
-                if killed {
-                    let death_snd = LevelSoundEventPacket::new(level_event::SOUND_DEATH, 0.0, 0.0, 0.0);
-                    broadcast_except(&self_data.rak, &self_data.players, None, death_snd.encode()).await;
-                }
+                let attacker_pos = self_data.players.read().get(&addr).map(|s| (s.x, s.y, s.z));
+                let _killed = self_data.entity_manager.damage_entity(interact.target, total_damage, attacker_eid, attacker_pos, &self_data.rak, &self_data.players).await;
 
                 // PvP Player damage
                 let target_player = {
@@ -1848,9 +1907,9 @@ fn get_block_drops(block_id: u8, meta: u8) -> Vec<crate::protocol::types::Item> 
 
 async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemPacket) {
     let player_info = self_data.players.read().get(&addr).map(|s| {
-        (s.x, s.y, s.z, s.yaw, s.pitch, s.entity_id, s.gamemode == 0, s.health, s.inventory.held_index())
+        (s.x, s.y, s.z, s.yaw, s.pitch, s.entity_id, s.gamemode == 0, s.health, s.food_level, s.inventory.held_index())
     });
-    let (px, py, pz, yaw, pitch, eid, is_survival, cur_health, held_slot) = match player_info {
+    let (px, py, pz, yaw, pitch, eid, is_survival, _cur_health, cur_food, held_slot) = match player_info {
         Some(info) => info,
         None => return,
     };
@@ -1915,39 +1974,124 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
         return;
     }
 
-    // 2. Food items
-    let food_heal = match item_id {
-        260 => Some(4),  // Apple
-        297 => Some(5),  // Bread
-        319 => Some(3),  // Raw Porkchop
-        320 => Some(8),  // Cooked Porkchop
-        322 => Some(20), // Golden Apple
-        363 => Some(3),  // Raw Beef
-        364 => Some(8),  // Steak
-        365 => Some(2),  // Raw Chicken
-        366 => Some(6),  // Cooked Chicken
-        391 => Some(1),  // Potato
-        393 => Some(5),  // Baked Potato
-        396 => Some(6),  // Golden Carrot
-        411 => Some(2),  // Raw Mutton
-        412 => Some(6),  // Cooked Mutton
+    // 2. Milk Bucket (clears all active effects)
+    let is_milk = item_id == 335 || (item_id == 325 && item_meta == 1);
+    if is_milk {
+        {
+            let mut players = self_data.players.write();
+            if let Some(s) = players.get_mut(&addr) {
+                s.effects = crate::entity::effect::EffectContainer::new();
+                if is_survival {
+                    s.inventory.set_item(held_slot, crate::protocol::types::Item::new(325, 0, 1));
+                }
+            }
+        }
+
+        let drink_snd = LevelSoundEventPacket::new(level_event::SOUND_DRINK, px as f32, py as f32, pz as f32);
+        broadcast_except(&self_data.rak, &self_data.players, None, drink_snd.encode()).await;
+
+        if is_survival {
+            let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, crate::protocol::types::Item::new(325, 0, 1));
+            send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+        }
+        return;
+    }
+
+    // 3. Food items
+    let food_info = match item_id {
+        260 => Some((4, 2.4f32)),  // Apple
+        297 => Some((5, 6.0f32)),  // Bread
+        319 => Some((3, 1.8f32)),  // Raw Porkchop
+        320 => Some((8, 12.8f32)), // Cooked Porkchop
+        322 => Some((4, 9.6f32)),  // Golden Apple
+        363 => Some((3, 1.8f32)),  // Raw Beef
+        364 => Some((8, 12.8f32)), // Steak
+        365 => Some((2, 1.2f32)),  // Raw Chicken
+        366 => Some((6, 7.2f32)),  // Cooked Chicken
+        367 => Some((4, 0.8f32)),  // Rotten Flesh
+        391 => Some((1, 0.6f32)),  // Potato
+        393 => Some((5, 6.0f32)),  // Baked Potato
+        396 => Some((6, 14.4f32)), // Golden Carrot
+        411 => Some((2, 1.2f32)),  // Raw Mutton
+        412 => Some((6, 9.6f32)),  // Cooked Mutton
+        466 => Some((4, 9.6f32)),  // Enchanted Golden Apple
         _ => None,
     };
 
-    if let Some(heal_amount) = food_heal {
-        if cur_health < 20 || item_id == 322 {
-            let new_health = (cur_health + heal_amount).min(20);
-            {
+    if let Some((food_gain, sat_gain)) = food_info {
+        if cur_food < 20 || item_id == 322 || item_id == 466 {
+            let mut effects_to_send = Vec::new();
+            let (new_food, new_sat, new_hp) = {
                 let mut players = self_data.players.write();
                 if let Some(s) = players.get_mut(&addr) {
-                    s.health = new_health;
+                    s.food_level = (s.food_level + food_gain).min(20);
+                    s.food_saturation = (s.food_saturation + sat_gain).min(s.food_level as f32);
+
+                    if item_id == 322 {
+                        // Golden Apple: Regen II (100 ticks), Absorption I (2400 ticks)
+                        let eff1 = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::REGENERATION, 100, 1);
+                        let eff2 = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::ABSORPTION, 2400, 0);
+                        s.effects.add_effect(eff1.clone());
+                        s.effects.add_effect(eff2.clone());
+                        effects_to_send.push(eff1);
+                        effects_to_send.push(eff2);
+                    } else if item_id == 466 {
+                        // Enchanted Golden Apple: Regen V (600 ticks), Resistance I (6000 ticks), Fire Resistance I (6000 ticks), Absorption IV (2400 ticks)
+                        let eff1 = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::REGENERATION, 600, 4);
+                        let eff2 = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::RESISTANCE, 6000, 0);
+                        let eff3 = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::FIRE_RESISTANCE, 6000, 0);
+                        let eff4 = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::ABSORPTION, 2400, 3);
+                        s.effects.add_effect(eff1.clone());
+                        s.effects.add_effect(eff2.clone());
+                        s.effects.add_effect(eff3.clone());
+                        s.effects.add_effect(eff4.clone());
+                        effects_to_send.push(eff1);
+                        effects_to_send.push(eff2);
+                        effects_to_send.push(eff3);
+                        effects_to_send.push(eff4);
+                    } else if item_id == 367 && rand::random::<f32>() < 0.8 {
+                        // Rotten Flesh: 80% Hunger
+                        let eff = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::HUNGER, 600, 0);
+                        s.effects.add_effect(eff.clone());
+                        effects_to_send.push(eff);
+                    } else if item_id == 365 && rand::random::<f32>() < 0.3 {
+                        // Raw Chicken: 30% Hunger
+                        let eff = crate::entity::effect::ActiveEffect::new(crate::entity::effect::effect_id::HUNGER, 600, 0);
+                        s.effects.add_effect(eff.clone());
+                        effects_to_send.push(eff);
+                    }
+
+                    (s.food_level, s.food_saturation, s.health)
+                } else {
+                    (20, 5.0, 20)
                 }
+            };
+
+            let mut attrs_pk = UpdateAttributesPacket::new(eid);
+            attrs_pk.attributes = vec![
+                Attribute::health(new_hp as f32),
+                Attribute::hunger(new_food as f32),
+                Attribute::food_saturation(new_sat),
+            ];
+            send_packet(&self_data.rak, addr, attrs_pk.encode()).await;
+
+            // Send effect packets to client
+            for eff in effects_to_send {
+                let eff_pk = MobEffectPacket {
+                    entity_runtime_id: eid,
+                    event_id: 1, // EVENT_ADD
+                    effect_id: eff.id as i32,
+                    amplifier: eff.amplifier as i32,
+                    particles: eff.show_particles,
+                    duration: eff.duration,
+                };
+                send_packet(&self_data.rak, addr, eff_pk.encode()).await;
             }
-            let hp_pk = SetHealthPacket::new(new_health as i32);
-            send_packet(&self_data.rak, addr, hp_pk.encode()).await;
 
             let eat_sound = LevelSoundEventPacket::new(level_event::SOUND_EAT, px as f32, py as f32, pz as f32);
+            let burp_sound = LevelSoundEventPacket::new(level_event::SOUND_BURP, px as f32, py as f32, pz as f32);
             broadcast_except(&self_data.rak, &self_data.players, None, eat_sound.encode()).await;
+            broadcast_except(&self_data.rak, &self_data.players, None, burp_sound.encode()).await;
 
             if is_survival {
                 let updated = {
@@ -2622,6 +2766,7 @@ impl Clone for OxideServer {
             permission_manager: self.permission_manager.clone(),
             projectile_manager: self.projectile_manager.clone(),
             entity_manager: self.entity_manager.clone(),
+            mob_spawner: self.mob_spawner.clone(),
             tile_manager: self.tile_manager.clone(),
             liquid_sim: self.liquid_sim.clone(),
             weather: self.weather.clone(),
