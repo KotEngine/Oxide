@@ -143,6 +143,93 @@ impl EntityManager {
         broadcast_to_all(rak, players, add_pk.encode()).await;
     }
 
+    pub async fn spawn_lightning(
+        &self,
+        entity_id: i64,
+        x: f64,
+        y: f64,
+        z: f64,
+        world: &Arc<RwLock<World>>,
+        rak: &RakNetServer,
+        players: &Arc<RwLock<HashMap<SocketAddr, PlayerState>>>,
+    ) {
+        // 1. Broadcast AddEntityPacket (type 93 = Lightning Bolt)
+        let add_pk = AddEntityPacket::new(entity_id, 93, x as f32, y as f32, z as f32);
+        broadcast_to_all(rak, players, add_pk.encode()).await;
+
+        // 2. Broadcast ExplodePacket for thunder clap sound and camera shake
+        let explode_pk = ExplodePacket::new(x as f32, y as f32, z as f32, 10.0);
+        broadcast_to_all(rak, players, explode_pk.encode()).await;
+
+        // 3. Place fire on ground if air above solid block
+        let bx = x.floor() as i32;
+        let by = y.floor() as i32;
+        let bz = z.floor() as i32;
+        {
+            let mut w = world.write();
+            if w.get_block_id_opt(bx, by, bz) != 0 && w.get_block_id_opt(bx, by + 1, bz) == 0 {
+                w.set_block(bx, by + 1, bz, 51, 0); // Fire block (51)
+            }
+        }
+        let fire_pk = UpdateBlockPacket::new(bx, (by + 1) as u32, bz, 51, 0, update_block::FLAG_ALL);
+        broadcast_to_all(rak, players, fire_pk.encode()).await;
+
+        // 4. Transform mobs near strike (Pig 12 -> PigZombie 36)
+        let mut to_transform = Vec::new();
+        {
+            let mut guard = self.entities.write();
+            for ent in guard.values_mut() {
+                let dist_sq = (ent.x - x).powi(2) + (ent.z - z).powi(2);
+                if dist_sq <= 16.0 {
+                    if ent.entity_type == 12 { // Pig
+                        ent.entity_type = 36; // PigZombie
+                        ent.name = "Zombie Pigman".to_string();
+                        ent.health = 20.0;
+                        ent.max_health = 20.0;
+                        to_transform.push((ent.id, 36, ent.x, ent.y, ent.z));
+                    }
+                }
+            }
+        }
+
+        for (mob_id, new_type, mx, my, mz) in to_transform {
+            let rem_pk = RemoveEntityPacket { entity_runtime_id: mob_id };
+            broadcast_to_all(rak, players, rem_pk.encode()).await;
+
+            let add_pk = AddEntityPacket::new(mob_id, new_type as u32, mx as f32, my as f32, mz as f32);
+            broadcast_to_all(rak, players, add_pk.encode()).await;
+        }
+
+        // 5. Strike nearby players in survival
+        let mut player_hits = Vec::new();
+        {
+            let p = players.read();
+            for (addr, s) in p.iter() {
+                if s.gamemode == 0 {
+                    let dist_sq = (s.x - x).powi(2) + (s.z - z).powi(2);
+                    if dist_sq <= 16.0 {
+                        player_hits.push((*addr, s.entity_id, s.health));
+                    }
+                }
+            }
+        }
+
+        for (addr, pid, hp) in player_hits {
+            let new_hp = hp.saturating_sub(10).max(1);
+            {
+                let mut p = players.write();
+                if let Some(s) = p.get_mut(&addr) {
+                    s.health = new_hp;
+                }
+            }
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            let anim = AnimatePacket::new(1, pid);
+            let hurt_snd = LevelSoundEventPacket::new(level_event::SOUND_HIT, x as f32, y as f32, z as f32);
+            let batch = BatchPacket::encode(&[hp_pk.encode(), anim.encode(), hurt_snd.encode()]);
+            rak.send_encapsulated(addr, batch, true).await;
+        }
+    }
+
     pub async fn spawn_tnt(
         &self,
         entity_id: i64,

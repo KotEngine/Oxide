@@ -629,6 +629,27 @@ async fn tick_loop(h: TickHandles) {
         // Ticking weather simulation (every tick)
         h.weather.tick(&h.rak, &h.players).await;
 
+        // Thunderstorm lightning strikes (every 300 ticks = 15 sec)
+        if tick_counter % 300 == 0 && h.weather.current_state() == crate::level::WeatherState::Thunder {
+            let target_pos = {
+                let p = h.players.read();
+                p.values().filter(|s| s.dimension == 0 && s.spawned).map(|s| (s.x, s.y, s.z)).next()
+            };
+            if let Some((px, py, pz)) = target_pos {
+                let offset_x = (rand::random::<f64>() - 0.5) * 30.0;
+                let offset_z = (rand::random::<f64>() - 0.5) * 30.0;
+                let lx = px + offset_x;
+                let lz = pz + offset_z;
+                let eid = {
+                    let mut id = h.next_entity_id.write();
+                    let val = *id;
+                    *id += 1;
+                    val
+                };
+                h.entity_manager.spawn_lightning(eid, lx, py, lz, &h.world, &h.rak, &h.players).await;
+            }
+        }
+
         // Ticking furnaces (every tick)
         h.tile_manager.tick_furnaces(&h.crafting_manager);
 
