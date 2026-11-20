@@ -1997,6 +1997,63 @@ async fn handle_use_item(self_data: &OxideServer, addr: SocketAddr, ui: UseItemP
         return;
     }
 
+    // 2.5. Potion items (373)
+    if item_id == 373 {
+        let potion_effects = crate::entity::effect::get_potion_effects(item_meta);
+        if !potion_effects.is_empty() {
+            let mut effects_to_send = Vec::new();
+            let new_hp = {
+                let mut players = self_data.players.write();
+                if let Some(s) = players.get_mut(&addr) {
+                    for eff in potion_effects {
+                        if eff.is_instant() {
+                            if eff.id == crate::entity::effect::effect_id::INSTANT_HEALTH {
+                                let heal = s.effects.apply_instant_health(eff.amplifier);
+                                s.health = (s.health + heal as u32).min(20);
+                            } else if eff.id == crate::entity::effect::effect_id::INSTANT_DAMAGE {
+                                let dmg = s.effects.apply_instant_damage(eff.amplifier);
+                                s.health = s.health.saturating_sub((-dmg) as u32);
+                            }
+                        } else {
+                            s.effects.add_effect(eff.clone());
+                            effects_to_send.push(eff);
+                        }
+                    }
+                    if is_survival {
+                        s.inventory.set_item(held_slot, crate::protocol::types::Item::new(374, 0, 1)); // Glass bottle
+                    }
+                    s.health
+                } else {
+                    20
+                }
+            };
+
+            let hp_pk = SetHealthPacket::new(new_hp as i32);
+            send_packet(&self_data.rak, addr, hp_pk.encode()).await;
+
+            let drink_snd = LevelSoundEventPacket::new(level_event::SOUND_DRINK, px as f32, py as f32, pz as f32);
+            broadcast_except(&self_data.rak, &self_data.players, None, drink_snd.encode()).await;
+
+            for eff in effects_to_send {
+                let eff_pk = MobEffectPacket {
+                    entity_runtime_id: eid,
+                    event_id: 1, // EVENT_ADD
+                    effect_id: eff.id as i32,
+                    amplifier: eff.amplifier as i32,
+                    particles: eff.show_particles,
+                    duration: eff.duration,
+                };
+                send_packet(&self_data.rak, addr, eff_pk.encode()).await;
+            }
+
+            if is_survival {
+                let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, crate::protocol::types::Item::new(374, 0, 1));
+                send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+            }
+            return;
+        }
+    }
+
     // 3. Food items
     let food_info = match item_id {
         260 => Some((4, 2.4f32)),  // Apple

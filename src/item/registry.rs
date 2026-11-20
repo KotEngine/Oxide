@@ -197,10 +197,12 @@ impl ItemRegistry {
         self.register(370, Arc::new(StandardItem::simple(370, "Ghast Tear", 64)));
         self.register(371, Arc::new(StandardItem::simple(371, "Gold Nugget", 64)));
         self.register(372, Arc::new(StandardItem::simple(372, "Nether Wart", 64)));
+        self.register(373, Arc::new(StandardItem::simple(373, "Potion", 1)));
         self.register(374, Arc::new(StandardItem::simple(374, "Glass Bottle", 64)));
         self.register(377, Arc::new(StandardItem::simple(377, "Blaze Powder", 64)));
         self.register(378, Arc::new(StandardItem::simple(378, "Magma Cream", 64)));
         self.register(381, Arc::new(StandardItem::simple(381, "Eye of Ender", 64)));
+        self.register(382, Arc::new(StandardItem::simple(382, "Glistering Melon", 64)));
         self.register(384, Arc::new(StandardItem::simple(384, "Bottle o' Enchanting", 64)));
         self.register(388, Arc::new(StandardItem::simple(388, "Emerald", 64)));
         self.register(397, Arc::new(StandardItem::simple(397, "Mob Head", 64)));
@@ -209,12 +211,16 @@ impl ItemRegistry {
         self.register(406, Arc::new(StandardItem::simple(406, "Nether Quartz", 64)));
         self.register(409, Arc::new(StandardItem::simple(409, "Prismarine Shard", 64)));
         self.register(410, Arc::new(StandardItem::simple(410, "Prismarine Crystals", 64)));
+        self.register(414, Arc::new(StandardItem::simple(414, "Rabbit's Foot", 64)));
         self.register(415, Arc::new(StandardItem::simple(415, "Rabbit Hide", 64)));
         self.register(421, Arc::new(StandardItem::simple(421, "Name Tag", 64)));
         self.register(426, Arc::new(StandardItem::simple(426, "End Crystal", 64)));
         self.register(433, Arc::new(StandardItem::simple(433, "Popped Chorus Fruit", 64)));
+        self.register(438, Arc::new(StandardItem::simple(438, "Splash Potion", 1)));
+        self.register(441, Arc::new(StandardItem::simple(441, "Lingering Potion", 1)));
         self.register(445, Arc::new(StandardItem::simple(445, "Shulker Shell", 64)));
         self.register(448, Arc::new(StandardItem::simple(448, "Totem of Undying", 1)));
+        self.register(449, Arc::new(StandardItem::simple(449, "Totem of Undying", 1)));
         self.register(452, Arc::new(StandardItem::simple(452, "Iron Nugget", 64)));
 
         // Food
