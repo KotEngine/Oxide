@@ -46,6 +46,39 @@ impl PlayerInventory {
     pub fn set_item(&self, slot: usize, item: Item) { self.main.set_item(slot, item); }
     pub fn add_item(&self, item: Item) -> Vec<Item> { self.main.add_item(item) }
     pub fn size(&self) -> usize { 36 }
+    pub fn contains_item(&self, id: i32, count: u32) -> bool {
+        let mut total = 0;
+        for it in self.get_contents() {
+            if it.id == id {
+                total += it.count;
+            }
+        }
+        total >= count
+    }
+
+    pub fn remove_item(&self, id: i32, mut count: u32) -> bool {
+        if !self.contains_item(id, count) {
+            return false;
+        }
+        for i in 0..36 {
+            let mut it = self.get_item(i);
+            if it.id == id && it.count > 0 {
+                if it.count <= count {
+                    count -= it.count;
+                    self.set_item(i, Item::air());
+                } else {
+                    it.count -= count;
+                    count = 0;
+                    self.set_item(i, it);
+                }
+                if count == 0 {
+                    break;
+                }
+            }
+        }
+        true
+    }
+
     pub fn clear(&self) {
         for i in 0..36 {
             self.main.set_item(i, Item::air());

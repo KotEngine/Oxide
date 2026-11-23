@@ -463,6 +463,14 @@ impl Session {
         }
     }
 
+    pub fn flush_acks(&mut self) {
+        if !self.ack_queue.is_empty() {
+            let ack = AcknowledgePacket { flag: crate::raknet::protocol::datagram::BITFLAG_ACK, packets: std::mem::take(&mut self.ack_queue) };
+            tracing::debug!("ACK -> {:?}", ack.packets);
+            self.send_packet_bytes(ack.encode());
+        }
+    }
+
     pub fn update(&mut self, now: f64) {
         if !self.is_active && self.last_update + 10.0 < now {
             self.state = STATE_DISCONNECTED;
@@ -472,11 +480,7 @@ impl Session {
 
         self.highest_seq_this_tick = -1;
 
-        if !self.ack_queue.is_empty() {
-            let ack = AcknowledgePacket { flag: crate::raknet::protocol::datagram::BITFLAG_ACK, packets: std::mem::take(&mut self.ack_queue) };
-            tracing::debug!("ACK -> {:?}", ack.packets);
-            self.send_packet_bytes(ack.encode());
-        }
+        self.flush_acks();
         if !self.nack_queue.is_empty() {
             let nak = AcknowledgePacket { flag: crate::raknet::protocol::datagram::BITFLAG_NAK, packets: std::mem::take(&mut self.nack_queue) };
             self.send_packet_bytes(nak.encode());

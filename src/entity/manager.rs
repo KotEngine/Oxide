@@ -866,10 +866,23 @@ impl EntityManager {
         }
 
         // Broadcast motion updates
+        let mut motion_packets = Vec::new();
         for ent in &list {
             if !to_remove.contains(&ent.id) && !ent.is_dead && (ent.motion_x.abs() > 0.01 || ent.motion_z.abs() > 0.01) {
                 let mv = MoveEntityPacket::new(ent.id, ent.x as f32, ent.y as f32, ent.z as f32, ent.yaw, ent.pitch);
-                broadcast_to_all(rak, players, mv.encode()).await;
+                motion_packets.push(mv.encode());
+            }
+        }
+        if !motion_packets.is_empty() {
+            let targets: Vec<SocketAddr> = {
+                let p = players.read();
+                p.keys().copied().collect()
+            };
+            if !targets.is_empty() {
+                let batch = BatchPacket::encode(&motion_packets);
+                for addr in targets {
+                    rak.send_encapsulated(addr, batch.clone(), false).await;
+                }
             }
         }
 

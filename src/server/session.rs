@@ -232,15 +232,16 @@ impl OxideServer {
             }
         };
 
-        let mut mv = MovePlayerPacket::new(entity_id, x as f32, y as f32, z as f32, yaw, pitch);
-        mv.mode = 1; // teleport/reset
+        let mut mv = MovePlayerPacket::new(entity_id, x as f32, (y + 1.62) as f32, z as f32, yaw, pitch);
+        mv.mode = crate::protocol::packets::move_player::MODE_TELEPORT;
         self.send_packet_to(addr, mv.encode());
 
-        let pk = MoveEntityPacket::new(entity_id, x as f32, y as f32, z as f32, yaw, pitch);
+        let mut other_mv = MovePlayerPacket::new(entity_id, x as f32, (y + 1.62) as f32, z as f32, yaw, pitch);
+        other_mv.mode = crate::protocol::packets::move_player::MODE_TELEPORT;
         let rak = self.rak.clone();
         let players = self.players.clone();
         tokio::spawn(async move {
-            broadcast_except(&rak, &players, Some(addr), pk.encode()).await;
+            broadcast_except(&rak, &players, Some(addr), other_mv.encode()).await;
         });
     }
 
@@ -948,16 +949,19 @@ async fn broadcast_player_positions(
     for (addr, state) in &snapshot {
         for (other_addr, other) in &snapshot {
             if other_addr == addr { continue; }
-            if !other.logged_in { continue; }
-            let pk = MoveEntityPacket::new(
+            if !other.logged_in || other.dimension != state.dimension { continue; }
+            let mut pk = MovePlayerPacket::new(
                 state.entity_id,
                 state.x as f32,
-                state.y as f32,
+                (state.y + 1.62) as f32,
                 state.z as f32,
                 state.yaw,
                 state.pitch,
             );
-            send_packet(rak, *other_addr, pk.encode()).await;
+            pk.head_yaw = state.yaw;
+            pk.on_ground = state.on_ground;
+            pk.mode = crate::protocol::packets::move_player::MODE_NORMAL;
+            rak.send_encapsulated(*other_addr, pk.encode(), false).await;
         }
     }
 }
@@ -1000,6 +1004,10 @@ fn clone_state(s: &PlayerState) -> PlayerState {
 async fn event_loop(self_data: OxideServer) -> anyhow::Result<()> {
     loop {
         let events = self_data.rak.drain_events().await;
+        if events.is_empty() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+            continue;
+        }
         for ev in events {
             match ev {
                 RakNetEvent::OpenSession(addr, client_id) => {
@@ -1307,11 +1315,23 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
             let mut fall_damage = 0;
             let mut eid = 0;
             let mut cur_hp = 20;
+            let mut moved = false;
+            let mut player_dim = 0;
             if let Some(state) = self_data.players.write().get_mut(&addr) {
                 let old_cx = (state.x as i32) >> 4;
                 let old_cz = (state.z as i32) >> 4;
                 let old_y = state.y;
                 eid = state.entity_id;
+                player_dim = state.dimension;
+
+                let dx = (mv.x as f64 - state.x).abs();
+                let dy = (mv.y as f64 - 1.62 - state.y).abs();
+                let dz = (mv.z as f64 - state.z).abs();
+                let dyaw = (mv.yaw - state.yaw).abs();
+                let dpitch = (mv.pitch - state.pitch).abs();
+                if dx > 0.0001 || dy > 0.0001 || dz > 0.0001 || dyaw > 1.0 || dpitch > 1.0 {
+                    moved = true;
+                }
 
                 state.x = mv.x as f64;
                 state.y = (mv.y - 1.62) as f64;
@@ -1335,6 +1355,33 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 let new_cz = (state.z as i32) >> 4;
                 if old_cx != new_cx || old_cz != new_cz {
                     chunk_to_load = Some((state.x as i32, state.z as i32, state.chunk_radius));
+                }
+            }
+
+            if moved {
+                let mut out_mv = MovePlayerPacket::new(
+                    eid,
+                    mv.x,
+                    mv.y,
+                    mv.z,
+                    mv.yaw,
+                    mv.pitch,
+                );
+                out_mv.head_yaw = mv.head_yaw;
+                out_mv.on_ground = mv.on_ground;
+                out_mv.mode = crate::protocol::packets::move_player::MODE_NORMAL;
+                let encoded = out_mv.encode();
+
+                let players_guard = self_data.players.read();
+                for (other_addr, other_state) in players_guard.iter() {
+                    if *other_addr != addr && other_state.logged_in && other_state.dimension == player_dim {
+                        let r = self_data.rak.clone();
+                        let target_addr = *other_addr;
+                        let payload = encoded.clone();
+                        tokio::spawn(async move {
+                            r.send_encapsulated(target_addr, payload, false).await;
+                        });
+                    }
                 }
             }
 
@@ -1399,6 +1446,16 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     );
                     broadcast_except(&self_data.rak, &self_data.players, Some(addr), punch_pk.encode()).await;
                 }
+                player_action::ACTION_CONTINUE_BREAK => {
+                    let punch_pk = LevelEventPacket::new(
+                        level_event::EVENT_PARTICLE_PUNCH_BLOCK,
+                        action.x as f32 + 0.5,
+                        action.y as f32 + 0.5,
+                        action.z as f32 + 0.5,
+                        action.face,
+                    );
+                    broadcast_except(&self_data.rak, &self_data.players, Some(addr), punch_pk.encode()).await;
+                }
                 player_action::ACTION_ABORT_BREAK => {
                     let stop_pk = LevelEventPacket::new(
                         level_event::EVENT_BLOCK_STOP_BREAK,
@@ -1411,6 +1468,58 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                 }
                 player_action::ACTION_STOP_BREAK => {
                     handle_break_block(self_data, addr, action.x, action.y as i32, action.z).await;
+                }
+                player_action::ACTION_START_SPRINT => {
+                    let (eid, meta) = {
+                        let mut p = self_data.players.write();
+                        if let Some(s) = p.get_mut(&addr) {
+                            s.metadata.set_generic_flag(crate::protocol::types::metadata::DATA_FLAG_SPRINTING, true);
+                            (s.entity_id, s.metadata.clone())
+                        } else {
+                            return;
+                        }
+                    };
+                    let pk = SetEntityDataPacket::new(eid, meta);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+                }
+                player_action::ACTION_STOP_SPRINT => {
+                    let (eid, meta) = {
+                        let mut p = self_data.players.write();
+                        if let Some(s) = p.get_mut(&addr) {
+                            s.metadata.set_generic_flag(crate::protocol::types::metadata::DATA_FLAG_SPRINTING, false);
+                            (s.entity_id, s.metadata.clone())
+                        } else {
+                            return;
+                        }
+                    };
+                    let pk = SetEntityDataPacket::new(eid, meta);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+                }
+                player_action::ACTION_START_SNEAK => {
+                    let (eid, meta) = {
+                        let mut p = self_data.players.write();
+                        if let Some(s) = p.get_mut(&addr) {
+                            s.metadata.set_generic_flag(crate::protocol::types::metadata::DATA_FLAG_SNEAKING, true);
+                            (s.entity_id, s.metadata.clone())
+                        } else {
+                            return;
+                        }
+                    };
+                    let pk = SetEntityDataPacket::new(eid, meta);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
+                }
+                player_action::ACTION_STOP_SNEAK => {
+                    let (eid, meta) = {
+                        let mut p = self_data.players.write();
+                        if let Some(s) = p.get_mut(&addr) {
+                            s.metadata.set_generic_flag(crate::protocol::types::metadata::DATA_FLAG_SNEAKING, false);
+                            (s.entity_id, s.metadata.clone())
+                        } else {
+                            return;
+                        }
+                    };
+                    let pk = SetEntityDataPacket::new(eid, meta);
+                    broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
                 }
                 player_action::ACTION_RELEASE_ITEM => {
                     let held_item = self_data.players.read().get(&addr).map(|s| s.inventory.held_item()).unwrap_or_else(crate::protocol::types::Item::air);
@@ -1595,18 +1704,34 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
             }
         }
         IncomingPacket::CraftingEvent(craft_pk) => {
-            let recipe_opt = self_data.crafting_manager.match_shapeless(&craft_pk.input)
-                .or_else(|| self_data.crafting_manager.match_shaped(&craft_pk.input, 3, 3));
-            if let Some(_recipe) = recipe_opt {
-                if let Some(state) = self_data.players.write().get_mut(&addr) {
-                    for out in &craft_pk.result {
-                        let _ = state.inventory.add_item(out.clone());
-                    }
+            let mut can_craft = true;
+            let mut inputs = Vec::new();
+            for inp in &craft_pk.input {
+                if !inp.is_air() && inp.count > 0 {
+                    inputs.push(inp.clone());
                 }
-            } else if !craft_pk.result.is_empty() {
-                if let Some(state) = self_data.players.write().get_mut(&addr) {
-                    for out in &craft_pk.result {
-                        let _ = state.inventory.add_item(out.clone());
+            }
+
+            {
+                let mut players = self_data.players.write();
+                if let Some(state) = players.get_mut(&addr) {
+                    if state.gamemode == 0 && !inputs.is_empty() {
+                        for inp in &inputs {
+                            if !state.inventory.contains_item(inp.id, inp.count) {
+                                can_craft = false;
+                                break;
+                            }
+                        }
+                        if can_craft {
+                            for inp in &inputs {
+                                let _ = state.inventory.remove_item(inp.id, inp.count);
+                            }
+                        }
+                    }
+                    if can_craft {
+                        for out in &craft_pk.result {
+                            let _ = state.inventory.add_item(out.clone());
+                        }
                     }
                 }
             }
@@ -1632,32 +1757,66 @@ async fn handle_packet(self_data: &OxideServer, addr: SocketAddr, payload: Vec<u
                     *id_guard += 1;
                     id
                 };
-                let player_info = self_data.players.read().get(&addr).map(|s| (s.x, s.y, s.z, s.yaw, s.pitch));
-                if let Some((px, py, pz, yaw, pitch)) = player_info {
-                    let yaw_rad = (yaw as f64).to_radians();
-                    let pitch_rad = (pitch as f64).to_radians();
-                    let speed_x = (-yaw_rad.sin() * pitch_rad.cos() * 0.4) as f32;
-                    let speed_y = (-pitch_rad.sin() * 0.4 + 0.1) as f32;
-                    let speed_z = (yaw_rad.cos() * pitch_rad.cos() * 0.4) as f32;
+                let player_info = self_data.players.read().get(&addr).map(|s| (s.x, s.y, s.z, s.yaw, s.pitch, s.gamemode == 0, s.inventory.held_index()));
+                if let Some((px, py, pz, _yaw, _pitch, is_survival, held_slot)) = player_info {
+                    if is_survival {
+                        let updated_item = {
+                            let mut p = self_data.players.write();
+                            if let Some(s) = p.get_mut(&addr) {
+                                let mut cur = s.inventory.get_item(held_slot);
+                                if cur.id == drop_pk.item.id && cur.count >= drop_pk.item.count {
+                                    cur.count -= drop_pk.item.count;
+                                    if cur.count == 0 {
+                                        cur = crate::protocol::types::Item::air();
+                                    }
+                                    s.inventory.set_item(held_slot, cur.clone());
+                                    Some(cur)
+                                } else {
+                                    let _ = s.inventory.remove_item(drop_pk.item.id, drop_pk.item.count);
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(it) = updated_item {
+                            let slot_pk = ContainerSetSlotPacket::new(0, held_slot as i32, it);
+                            send_packet(&self_data.rak, addr, slot_pk.encode()).await;
+                        } else {
+                            let inv_items = self_data.players.read().get(&addr).map(|s| s.inventory.get_contents());
+                            if let Some(items) = inv_items {
+                                let mut content_pk = ContainerSetContentPacket::new(crate::protocol::types::ContainerIds::INVENTORY as u32);
+                                content_pk.target_eid = self_data.players.read().get(&addr).map(|s| s.entity_id).unwrap_or(0);
+                                content_pk.items = items;
+                                send_packet(&self_data.rak, addr, content_pk.encode()).await;
+                            }
+                        }
+                    }
 
-                    let mut add_item = AddItemEntityPacket::new(
+                    self_data.entity_manager.spawn_item_drop(
                         eid,
                         drop_pk.item.clone(),
-                        px as f32,
-                        (py + 1.3) as f32,
-                        pz as f32,
-                    );
-                    add_item.speed_x = speed_x;
-                    add_item.speed_y = speed_y;
-                    add_item.speed_z = speed_z;
-                    broadcast_except(&self_data.rak, &self_data.players, None, add_item.encode()).await;
+                        px,
+                        py + 1.3,
+                        pz,
+                        &self_data.rak,
+                        &self_data.players,
+                    ).await;
                 }
             }
         }
         IncomingPacket::PlayerInput(pi) => {
-            if let Some(state) = self_data.players.write().get_mut(&addr) {
-                state.metadata.set_generic_flag(EntityMetadata::DATA_FLAG_SNEAKING, pi.sneaking);
-            }
+            let (eid, meta) = {
+                let mut p = self_data.players.write();
+                if let Some(state) = p.get_mut(&addr) {
+                    state.metadata.set_generic_flag(EntityMetadata::DATA_FLAG_SNEAKING, pi.sneaking);
+                    (state.entity_id, state.metadata.clone())
+                } else {
+                    return;
+                }
+            };
+            let pk = SetEntityDataPacket::new(eid, meta);
+            broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
         }
         IncomingPacket::CommandStep(cs) => {
             let mut full_cmd = cs.command.trim().to_string();
@@ -1813,7 +1972,7 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
     let pk = UpdateBlockPacket::new(x, y as u32, z, 0, 0, update_block::FLAG_ALL);
     broadcast_except(&self_data.rak, &self_data.players, None, pk.encode()).await;
 
-    // Block break particle and sound effect
+    // Block break particle and sound effect (LevelEventPacket::EVENT_PARTICLE_DESTROY plays the correct block break sound and particles)
     let destroy_pk = LevelEventPacket::new(
         level_event::EVENT_PARTICLE_DESTROY,
         x as f32 + 0.5,
@@ -1822,15 +1981,6 @@ async fn handle_break_block(self_data: &OxideServer, addr: SocketAddr, x: i32, y
         (old_id as i32) | ((old_meta as i32) << 8),
     );
     broadcast_except(&self_data.rak, &self_data.players, None, destroy_pk.encode()).await;
-
-    let break_sound = LevelSoundEventPacket::new_with_extra(
-        level_event::SOUND_BREAK,
-        x as f32 + 0.5,
-        y as f32 + 0.5,
-        z as f32 + 0.5,
-        old_id as i32,
-    );
-    broadcast_except(&self_data.rak, &self_data.players, None, break_sound.encode()).await;
 
     // Gravity check for sand (12) and gravel (13) directly above
     if y + 1 < 256 {
@@ -2749,19 +2899,18 @@ async fn send_spawn_chunks(self_data: &OxideServer, addr: SocketAddr, cx: i32, c
         dx * dx + dz * dz
     });
 
-    let chunks: Vec<Vec<u8>> = {
-        let dim = self_data.players.read().get(&addr).map(|s| s.dimension).unwrap_or(0);
-        let target_world = self_data.get_world(dim);
-        let mut world = target_world.write();
-        wanted.iter()
-            .map(|&(x, z)| FullChunkDataPacket::new(x, z, world.serialize_chunk(x, z)).encode())
-            .collect()
-    };
+    let dim = self_data.players.read().get(&addr).map(|s| s.dimension).unwrap_or(0);
+    let target_world = self_data.get_world(dim);
+    let total = wanted.len();
 
-    let total = chunks.len();
-    for (i, pk) in chunks.into_iter().enumerate() {
+    for (i, (x, z)) in wanted.into_iter().enumerate() {
+        let chunk_data = {
+            let mut world = target_world.write();
+            world.serialize_chunk(x, z)
+        };
+        let pk = FullChunkDataPacket::new(x, z, chunk_data).encode();
         send_raw(&self_data.rak, addr, BatchPacket::encode(&[pk])).await;
-        if (i + 1) % 16 == 0 {
+        if (i + 1) % 4 == 0 {
             tokio::task::yield_now().await;
         }
     }

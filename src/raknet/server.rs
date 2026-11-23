@@ -85,7 +85,7 @@ impl RakNetServer {
     }
 
     async fn tick_loop(&self) {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(10));
         loop {
             if *self.shutdown.read() { return; }
             interval.tick().await;
@@ -196,16 +196,29 @@ impl RakNetServer {
                 let datagram = Datagram::decode(data);
                 let is_new = !self.sessions.read().contains_key(&addr);
                 if is_new && datagram.packets.is_empty() { return; }
-                let (was_connecting, now_connected, cid) = {
+                let (was_connecting, now_connected, cid, inc_packets, out_packets) = {
                     let mut sessions = self.sessions.write();
                     let session = sessions.entry(addr).or_insert_with(|| {
                         Session::new(Self::sock_to_internet(addr, 4), 0, 1492, current_time())
                     });
                     let was_connecting = session.state == crate::raknet::session::STATE_CONNECTING;
                     session.handle_datagram(datagram);
+                    session.flush_acks();
                     let now_connected = session.state == crate::raknet::session::STATE_CONNECTED;
-                    (was_connecting, now_connected, session.client_id)
+                    let inc = session.take_incoming();
+                    let out = session.take_outgoing();
+                    (was_connecting, now_connected, session.client_id, inc, out)
                 };
+                for out_bytes in out_packets {
+                    let _ = self.socket.send_to(&out_bytes, addr).await;
+                }
+                if !inc_packets.is_empty() {
+                    let mut ev = self.events.lock().await;
+                    let internet = Self::sock_to_internet(addr, 4);
+                    for inc in inc_packets {
+                        ev.push(RakNetEvent::Encapsulated(internet.clone(), inc));
+                    }
+                }
                 if was_connecting && now_connected {
                     let ev = self.events.clone();
                     let internet = Self::sock_to_internet(addr, 4);
@@ -220,9 +233,18 @@ impl RakNetServer {
 
     pub async fn send_encapsulated(&self, addr: SocketAddr, payload: Vec<u8>, reliable_ordered: bool) {
         let reliability = if reliable_ordered { crate::raknet::protocol::PacketReliability::RELIABLE_ORDERED } else { crate::raknet::protocol::PacketReliability::UNRELIABLE };
-        let mut sessions = self.sessions.write();
-        if let Some(session) = sessions.get_mut(&addr) {
-            session.send_payload(payload, reliability, 0);
+        let outgoing = {
+            let mut sessions = self.sessions.write();
+            if let Some(session) = sessions.get_mut(&addr) {
+                session.send_payload(payload, reliability, 0);
+                session.send_queue(current_time());
+                session.take_outgoing()
+            } else {
+                Vec::new()
+            }
+        };
+        for data in outgoing {
+            let _ = self.socket.send_to(&data, addr).await;
         }
     }
 
