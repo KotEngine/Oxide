@@ -110,28 +110,33 @@ impl MobSpawner {
                         };
 
                         if is_night || surface_y < 55 {
-                            let (mob_type, name, hp) = match rng.gen_range(0..10) {
+                            let (mob_type, name, hp) = match rng.gen_range(0..12) {
                                 0..=3 => (32, "Zombie".to_string(), 20.0),
                                 4..=6 => (34, "Skeleton".to_string(), 20.0),
                                 7..=8 => (33, "Creeper".to_string(), 20.0),
-                                _ => (35, "Spider".to_string(), 16.0),
+                                9..=10 => (35, "Spider".to_string(), 16.0),
+                                _ => (45, "Witch".to_string(), 26.0),
                             };
                             results.push((mob_type, name, spawn_x, spawn_y, spawn_z, hp));
-                        } else if is_grass && rng.gen_bool(0.3) {
-                            let (mob_type, name, hp) = match rng.gen_range(0..4) {
-                                0 => (11, "Cow".to_string(), 10.0),
-                                1 => (12, "Pig".to_string(), 10.0),
-                                2 => (13, "Sheep".to_string(), 8.0),
-                                _ => (10, "Chicken".to_string(), 4.0),
+                        } else if is_grass && rng.gen_bool(0.35) {
+                            let (mob_type, name, hp) = match rng.gen_range(0..10) {
+                                0..=1 => (11, "Cow".to_string(), 10.0),
+                                2..=3 => (12, "Pig".to_string(), 10.0),
+                                4..=5 => (13, "Sheep".to_string(), 8.0),
+                                6..=7 => (10, "Chicken".to_string(), 4.0),
+                                8 => (14, "Wolf".to_string(), 8.0),
+                                _ => (18, "Rabbit".to_string(), 3.0),
                             };
                             results.push((mob_type, name, spawn_x, spawn_y, spawn_z, hp));
                         }
                     }
                     1 => {
-                        let (mob_type, name, hp) = match rng.gen_range(0..10) {
-                            0..=6 => (36, "Zombie Pigman".to_string(), 20.0),
-                            7..=8 => (42, "Magma Cube".to_string(), 16.0),
-                            _ => (41, "Blaze".to_string(), 20.0),
+                        let (mob_type, name, hp) = match rng.gen_range(0..12) {
+                            0..=5 => (36, "Zombie Pigman".to_string(), 20.0),
+                            6..=7 => (42, "Magma Cube".to_string(), 16.0),
+                            8..=9 => (43, "Blaze".to_string(), 20.0),
+                            10 => (41, "Ghast".to_string(), 10.0),
+                            _ => (48, "Wither Skeleton".to_string(), 20.0),
                         };
                         results.push((mob_type, name, spawn_x, spawn_y, spawn_z, hp));
                     }
@@ -154,8 +159,9 @@ impl MobSpawner {
                 id
             };
 
-            entity_manager.spawn_mob(
+            entity_manager.spawn_mob_in_dim(
                 eid,
+                dimension,
                 mob_type,
                 name,
                 sx,

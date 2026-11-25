@@ -76,6 +76,18 @@ impl SubChunk {
         self.sky_light[i >> 1] = (cur & !(0x0f << shift)) | ((level & 0x0f) << shift);
     }
 
+    pub fn get_block_light(&self, x: usize, y: usize, z: usize) -> u8 {
+        let i = Self::index(x, y, z);
+        (self.block_light[i >> 1] >> ((i & 1) * 4)) & 0x0f
+    }
+
+    pub fn set_block_light(&mut self, x: usize, y: usize, z: usize, level: u8) {
+        let i = Self::index(x, y, z);
+        let shift = (i & 1) * 4;
+        let cur = self.block_light[i >> 1];
+        self.block_light[i >> 1] = (cur & !(0x0f << shift)) | ((level & 0x0f) << shift);
+    }
+
     pub fn network_serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(1 + BLOCK_IDS_LEN + BLOCK_DATA_LEN + BLOCK_LIGHT_LEN + SKY_LIGHT_LEN);
         out.push(0);

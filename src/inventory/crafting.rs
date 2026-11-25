@@ -33,11 +33,31 @@ impl RecipeIngredient {
 
 pub struct CraftingManager {
     recipes: RwLock<HashMap<String, Recipe>>,
+    brewing_recipes: RwLock<HashMap<(i32, i32, i32), Item>>,
 }
 
 impl CraftingManager {
     pub fn new() -> Self {
-        Self { recipes: RwLock::new(HashMap::new()) }
+        Self {
+            recipes: RwLock::new(HashMap::new()),
+            brewing_recipes: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn add_brewing_recipe(&self, ingredient_id: i32, input_potion: Item, result: Item) {
+        self.brewing_recipes
+            .write()
+            .insert((ingredient_id, input_potion.id, input_potion.meta), result);
+    }
+
+    pub fn match_brewing(&self, ingredient: &Item, potion: &Item) -> Option<Item> {
+        if ingredient.is_air() || potion.is_air() {
+            return None;
+        }
+        self.brewing_recipes
+            .read()
+            .get(&(ingredient.id, potion.id, potion.meta))
+            .cloned()
     }
 
     pub fn add_recipe(&self, recipe: Recipe) {
@@ -806,6 +826,139 @@ impl CraftingManager {
             width: 2,
             height: 2,
         });
+
+        self.register_default_brewing_recipes();
+    }
+
+    fn register_default_brewing_recipes(&self) {
+        // Potion meta constants matching Bedrock 1.1.5
+        const WATER: i32 = 0;
+        const MUNDANE: i32 = 1;
+        const MUNDANE_EXT: i32 = 2;
+        const THICK: i32 = 3;
+        const AWKWARD: i32 = 4;
+        const NIGHT_VISION: i32 = 5;
+        const NIGHT_VISION_T: i32 = 6;
+        const INVISIBILITY: i32 = 7;
+        const INVISIBILITY_T: i32 = 8;
+        const LEAPING: i32 = 9;
+        const LEAPING_T: i32 = 10;
+        const LEAPING_TWO: i32 = 11;
+        const FIRE_RESISTANCE: i32 = 12;
+        const FIRE_RESISTANCE_T: i32 = 13;
+        const SWIFTNESS: i32 = 14;
+        const SWIFTNESS_T: i32 = 15;
+        const SWIFTNESS_TWO: i32 = 16;
+        const SLOWNESS: i32 = 17;
+        const SLOWNESS_T: i32 = 18;
+        const WATER_BREATHING: i32 = 19;
+        const WATER_BREATHING_T: i32 = 20;
+        const HEALING: i32 = 21;
+        const HEALING_TWO: i32 = 22;
+        const HARMING: i32 = 23;
+        const HARMING_TWO: i32 = 24;
+        const POISON: i32 = 25;
+        const POISON_T: i32 = 26;
+        const POISON_TWO: i32 = 27;
+        const REGENERATION: i32 = 28;
+        const REGENERATION_T: i32 = 29;
+        const REGENERATION_TWO: i32 = 30;
+        const STRENGTH: i32 = 31;
+        const STRENGTH_T: i32 = 32;
+        const STRENGTH_TWO: i32 = 33;
+        const WEAKNESS: i32 = 34;
+        const WEAKNESS_T: i32 = 35;
+
+        // Ingredients
+        const GUNPOWDER: i32 = 289;
+        const REDSTONE: i32 = 331;
+        const GLOWSTONE_DUST: i32 = 348;
+        const SUGAR: i32 = 353;
+        const GHAST_TEAR: i32 = 370;
+        const NETHER_WART: i32 = 372;
+        const SPIDER_EYE: i32 = 375;
+        const FERMENTED_EYE: i32 = 376;
+        const BLAZE_POWDER: i32 = 377;
+        const MAGMA_CREAM: i32 = 378;
+        const GLISTERING_MELON: i32 = 382;
+        const GOLDEN_CARROT: i32 = 396;
+        const RABBIT_FOOT: i32 = 414;
+        const PUFFERFISH: i32 = 462;
+
+        // Register for both normal Potion (373) and Splash Potion (438)
+        for pid in [373, 438] {
+            let p = |m: i32| Item::new(pid, m, 1);
+
+            self.add_brewing_recipe(NETHER_WART, p(WATER), p(AWKWARD));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(WATER), p(THICK));
+            self.add_brewing_recipe(REDSTONE, p(WATER), p(MUNDANE_EXT));
+            self.add_brewing_recipe(FERMENTED_EYE, p(WATER), p(WEAKNESS));
+            self.add_brewing_recipe(GHAST_TEAR, p(WATER), p(MUNDANE));
+            self.add_brewing_recipe(GLISTERING_MELON, p(WATER), p(MUNDANE));
+            self.add_brewing_recipe(BLAZE_POWDER, p(WATER), p(MUNDANE));
+            self.add_brewing_recipe(MAGMA_CREAM, p(WATER), p(MUNDANE));
+            self.add_brewing_recipe(SUGAR, p(WATER), p(MUNDANE));
+            self.add_brewing_recipe(SPIDER_EYE, p(WATER), p(MUNDANE));
+            self.add_brewing_recipe(RABBIT_FOOT, p(WATER), p(MUNDANE));
+
+            self.add_brewing_recipe(FERMENTED_EYE, p(MUNDANE), p(WEAKNESS));
+            self.add_brewing_recipe(FERMENTED_EYE, p(THICK), p(WEAKNESS));
+            self.add_brewing_recipe(FERMENTED_EYE, p(MUNDANE_EXT), p(WEAKNESS_T));
+            self.add_brewing_recipe(REDSTONE, p(WEAKNESS), p(WEAKNESS_T));
+
+            self.add_brewing_recipe(GHAST_TEAR, p(AWKWARD), p(REGENERATION));
+            self.add_brewing_recipe(REDSTONE, p(REGENERATION), p(REGENERATION_T));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(REGENERATION), p(REGENERATION_TWO));
+
+            self.add_brewing_recipe(BLAZE_POWDER, p(AWKWARD), p(STRENGTH));
+            self.add_brewing_recipe(REDSTONE, p(STRENGTH), p(STRENGTH_T));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(STRENGTH), p(STRENGTH_TWO));
+
+            self.add_brewing_recipe(SUGAR, p(AWKWARD), p(SWIFTNESS));
+            self.add_brewing_recipe(REDSTONE, p(SWIFTNESS), p(SWIFTNESS_T));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(SWIFTNESS), p(SWIFTNESS_TWO));
+
+            self.add_brewing_recipe(MAGMA_CREAM, p(AWKWARD), p(FIRE_RESISTANCE));
+            self.add_brewing_recipe(REDSTONE, p(FIRE_RESISTANCE), p(FIRE_RESISTANCE_T));
+
+            self.add_brewing_recipe(GLISTERING_MELON, p(AWKWARD), p(HEALING));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(HEALING), p(HEALING_TWO));
+
+            self.add_brewing_recipe(SPIDER_EYE, p(AWKWARD), p(POISON));
+            self.add_brewing_recipe(REDSTONE, p(POISON), p(POISON_T));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(POISON), p(POISON_TWO));
+
+            self.add_brewing_recipe(RABBIT_FOOT, p(AWKWARD), p(LEAPING));
+            self.add_brewing_recipe(REDSTONE, p(LEAPING), p(LEAPING_T));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(LEAPING), p(LEAPING_TWO));
+
+            self.add_brewing_recipe(PUFFERFISH, p(AWKWARD), p(WATER_BREATHING));
+            self.add_brewing_recipe(REDSTONE, p(WATER_BREATHING), p(WATER_BREATHING_T));
+
+            self.add_brewing_recipe(GOLDEN_CARROT, p(AWKWARD), p(NIGHT_VISION));
+            self.add_brewing_recipe(REDSTONE, p(NIGHT_VISION), p(NIGHT_VISION_T));
+            self.add_brewing_recipe(FERMENTED_EYE, p(NIGHT_VISION), p(INVISIBILITY));
+            self.add_brewing_recipe(FERMENTED_EYE, p(NIGHT_VISION_T), p(INVISIBILITY_T));
+            self.add_brewing_recipe(REDSTONE, p(INVISIBILITY), p(INVISIBILITY_T));
+
+            self.add_brewing_recipe(FERMENTED_EYE, p(SWIFTNESS), p(SLOWNESS));
+            self.add_brewing_recipe(FERMENTED_EYE, p(LEAPING), p(SLOWNESS));
+            self.add_brewing_recipe(FERMENTED_EYE, p(FIRE_RESISTANCE), p(SLOWNESS));
+            self.add_brewing_recipe(FERMENTED_EYE, p(SWIFTNESS_T), p(SLOWNESS_T));
+            self.add_brewing_recipe(FERMENTED_EYE, p(LEAPING_T), p(SLOWNESS_T));
+            self.add_brewing_recipe(FERMENTED_EYE, p(FIRE_RESISTANCE_T), p(SLOWNESS_T));
+            self.add_brewing_recipe(REDSTONE, p(SLOWNESS), p(SLOWNESS_T));
+
+            self.add_brewing_recipe(FERMENTED_EYE, p(HEALING), p(HARMING));
+            self.add_brewing_recipe(FERMENTED_EYE, p(POISON), p(HARMING));
+            self.add_brewing_recipe(FERMENTED_EYE, p(HEALING_TWO), p(HARMING_TWO));
+            self.add_brewing_recipe(FERMENTED_EYE, p(POISON_TWO), p(HARMING_TWO));
+            self.add_brewing_recipe(GLOWSTONE_DUST, p(HARMING), p(HARMING_TWO));
+        }
+
+        for meta in 0..=36 {
+            self.add_brewing_recipe(GUNPOWDER, Item::new(373, meta, 1), Item::new(438, meta, 1));
+        }
     }
 }
 

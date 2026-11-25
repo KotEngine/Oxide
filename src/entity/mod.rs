@@ -7,6 +7,8 @@ pub mod manager;
 pub mod effect;
 pub mod loot;
 pub mod spawner;
+pub mod damage;
+pub mod physics;
 
 pub use entity::{Entity, EntityData};
 pub use player::Player;

@@ -227,50 +227,41 @@ pub fn milk_clears_effects() -> bool {
     true
 }
 
-/// Helper: map Bedrock potion item metadata to active effects.
+/// Helper: map Bedrock 1.1.5 potion item metadata to active effects.
 pub fn get_potion_effects(meta: i32) -> Vec<ActiveEffect> {
     match meta {
-        // Healing (Instant Health)
-        5 => vec![ActiveEffect::new(effect_id::INSTANT_HEALTH, 1, 0)],
-        6 => vec![ActiveEffect::new(effect_id::INSTANT_HEALTH, 1, 1)], // Healing II
-        // Harming (Instant Damage)
-        7 => vec![ActiveEffect::new(effect_id::INSTANT_DAMAGE, 1, 0)],
-        8 => vec![ActiveEffect::new(effect_id::INSTANT_DAMAGE, 1, 1)], // Harming II
-        // Regeneration
-        9 => vec![ActiveEffect::new(effect_id::REGENERATION, 900, 0)], // 45s
-        10 => vec![ActiveEffect::new(effect_id::REGENERATION, 440, 1)], // 22s II
-        11 => vec![ActiveEffect::new(effect_id::REGENERATION, 2400, 0)], // 2m Long
-        // Strength
-        12 => vec![ActiveEffect::new(effect_id::STRENGTH, 3600, 0)], // 3m
-        13 => vec![ActiveEffect::new(effect_id::STRENGTH, 1800, 1)], // 1m30s II
-        14 => vec![ActiveEffect::new(effect_id::STRENGTH, 9600, 0)], // 8m Long
-        // Speed
-        15 => vec![ActiveEffect::new(effect_id::SPEED, 3600, 0)], // 3m
-        16 => vec![ActiveEffect::new(effect_id::SPEED, 1800, 1)], // 1m30s II
-        17 => vec![ActiveEffect::new(effect_id::SPEED, 9600, 0)], // 8m Long
-        // Slowness
-        18 => vec![ActiveEffect::new(effect_id::SLOWNESS, 1800, 0)], // 1m30s
-        19 => vec![ActiveEffect::new(effect_id::SLOWNESS, 4800, 0)], // 4m Long
-        // Water Breathing
-        20 => vec![ActiveEffect::new(effect_id::WATER_BREATHING, 3600, 0)], // 3m
-        21 => vec![ActiveEffect::new(effect_id::WATER_BREATHING, 9600, 0)], // 8m Long
-        // Fire Resistance
-        22 => vec![ActiveEffect::new(effect_id::FIRE_RESISTANCE, 3600, 0)], // 3m
-        23 => vec![ActiveEffect::new(effect_id::FIRE_RESISTANCE, 9600, 0)], // 8m Long
-        // Poison
-        24 => vec![ActiveEffect::new(effect_id::POISON, 900, 0)], // 45s
-        25 => vec![ActiveEffect::new(effect_id::POISON, 440, 1)], // 22s II
-        26 => vec![ActiveEffect::new(effect_id::POISON, 2400, 0)], // 2m Long
-        // Night Vision
-        27 => vec![ActiveEffect::new(effect_id::NIGHT_VISION, 3600, 0)], // 3m
-        28 => vec![ActiveEffect::new(effect_id::NIGHT_VISION, 9600, 0)], // 8m Long
-        // Invisibility
-        29 => vec![ActiveEffect::new(effect_id::INVISIBILITY, 3600, 0)], // 3m
-        30 => vec![ActiveEffect::new(effect_id::INVISIBILITY, 9600, 0)], // 8m Long
-        // Leaping
-        31 => vec![ActiveEffect::new(effect_id::JUMP_BOOST, 3600, 0)], // 3m
-        32 => vec![ActiveEffect::new(effect_id::JUMP_BOOST, 1800, 1)], // 1m30s II
-        33 => vec![ActiveEffect::new(effect_id::JUMP_BOOST, 9600, 0)], // 8m Long
+        5 => vec![ActiveEffect::new(effect_id::NIGHT_VISION, 3600, 0)],
+        6 => vec![ActiveEffect::new(effect_id::NIGHT_VISION, 9600, 0)],
+        7 => vec![ActiveEffect::new(effect_id::INVISIBILITY, 3600, 0)],
+        8 => vec![ActiveEffect::new(effect_id::INVISIBILITY, 9600, 0)],
+        9 => vec![ActiveEffect::new(effect_id::JUMP_BOOST, 3600, 0)],
+        10 => vec![ActiveEffect::new(effect_id::JUMP_BOOST, 9600, 0)],
+        11 => vec![ActiveEffect::new(effect_id::JUMP_BOOST, 1800, 1)],
+        12 => vec![ActiveEffect::new(effect_id::FIRE_RESISTANCE, 3600, 0)],
+        13 => vec![ActiveEffect::new(effect_id::FIRE_RESISTANCE, 9600, 0)],
+        14 => vec![ActiveEffect::new(effect_id::SPEED, 3600, 0)],
+        15 => vec![ActiveEffect::new(effect_id::SPEED, 9600, 0)],
+        16 => vec![ActiveEffect::new(effect_id::SPEED, 1800, 1)],
+        17 => vec![ActiveEffect::new(effect_id::SLOWNESS, 1800, 0)],
+        18 => vec![ActiveEffect::new(effect_id::SLOWNESS, 4800, 0)],
+        19 => vec![ActiveEffect::new(effect_id::WATER_BREATHING, 3600, 0)],
+        20 => vec![ActiveEffect::new(effect_id::WATER_BREATHING, 9600, 0)],
+        21 => vec![ActiveEffect::new(effect_id::INSTANT_HEALTH, 1, 0)],
+        22 => vec![ActiveEffect::new(effect_id::INSTANT_HEALTH, 1, 1)],
+        23 => vec![ActiveEffect::new(effect_id::INSTANT_DAMAGE, 1, 0)],
+        24 => vec![ActiveEffect::new(effect_id::INSTANT_DAMAGE, 1, 1)],
+        25 => vec![ActiveEffect::new(effect_id::POISON, 900, 0)],
+        26 => vec![ActiveEffect::new(effect_id::POISON, 2400, 0)],
+        27 => vec![ActiveEffect::new(effect_id::POISON, 440, 1)],
+        28 => vec![ActiveEffect::new(effect_id::REGENERATION, 900, 0)],
+        29 => vec![ActiveEffect::new(effect_id::REGENERATION, 2400, 0)],
+        30 => vec![ActiveEffect::new(effect_id::REGENERATION, 440, 1)],
+        31 => vec![ActiveEffect::new(effect_id::STRENGTH, 3600, 0)],
+        32 => vec![ActiveEffect::new(effect_id::STRENGTH, 9600, 0)],
+        33 => vec![ActiveEffect::new(effect_id::STRENGTH, 1800, 1)],
+        34 => vec![ActiveEffect::new(effect_id::WEAKNESS, 1800, 0)],
+        35 => vec![ActiveEffect::new(effect_id::WEAKNESS, 4800, 0)],
+        36 => vec![ActiveEffect::new(effect_id::WITHER, 800, 1)],
         _ => Vec::new(),
     }
 }

@@ -105,6 +105,7 @@ impl DataPacket for SpawnExperienceOrbPacket {
     fn name(&self) -> &'static str { "SpawnExperienceOrbPacket" }
 }
 
+#[derive(Debug, Clone)]
 pub struct ItemFrameDropItemPacket {
     pub x: i32,
     pub y: u32,

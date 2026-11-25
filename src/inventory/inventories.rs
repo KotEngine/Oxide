@@ -5,9 +5,9 @@ use super::{Inventory, InventoryType};
 pub struct PlayerInventory {
     main: BaseInventory,
     armor: BaseInventory,
-    #[allow(dead_code)]
     offhand: BaseInventory,
     held_index: parking_lot::RwLock<usize>,
+    hotbar: parking_lot::RwLock<[i32; 9]>,
 }
 
 impl PlayerInventory {
@@ -17,22 +17,81 @@ impl PlayerInventory {
             armor: BaseInventory::new(4).with_title("Armor"),
             offhand: BaseInventory::new(1).with_title("Offhand"),
             held_index: parking_lot::RwLock::new(0),
+            hotbar: parking_lot::RwLock::new([0, 1, 2, 3, 4, 5, 6, 7, 8]),
         }
     }
 
+    pub fn held_slot_i32(&self) -> i32 {
+        let i = (*self.held_index.read()).min(8);
+        self.hotbar.read()[i]
+    }
+
+    pub fn held_slot(&self) -> usize {
+        self.held_slot_i32().max(0) as usize
+    }
+
     pub fn held_item(&self) -> Item {
-        let i = *self.held_index.read();
-        self.main.get_item(i)
+        let slot = self.held_slot_i32();
+        if slot >= 0 && (slot as usize) < 36 {
+            self.main.get_item(slot as usize)
+        } else {
+            Item::air()
+        }
     }
 
     pub fn set_held_index(&self, index: usize) {
         *self.held_index.write() = index.min(8);
     }
 
+    pub fn set_held_index_with_mapping(&self, hotbar_slot: usize, inventory_slot: i32) {
+        let hs = hotbar_slot.min(8);
+        *self.held_index.write() = hs;
+        let mut mapped = inventory_slot - 9;
+        if mapped < 0 || mapped >= 36 {
+            mapped = -1;
+        }
+        let mut hb = self.hotbar.write();
+        if mapped != -1 {
+            if let Some(pos) = hb.iter().position(|&x| x == mapped) {
+                hb[pos] = hb[hs];
+            }
+        }
+        hb[hs] = mapped;
+    }
+
+    pub fn hotbar_array(&self) -> [i32; 9] {
+        *self.hotbar.read()
+    }
+
+    pub fn set_hotbar_array(&self, links: [i32; 9]) {
+        *self.hotbar.write() = links;
+    }
+
+    pub fn wire_hotbar_links(&self) -> Vec<i32> {
+        self.hotbar
+            .read()
+            .iter()
+            .map(|&idx| if idx < 0 { -1 } else { idx + 9 })
+            .collect()
+    }
+
+    pub fn wire_contents(&self) -> Vec<Item> {
+        let mut items = self.main.get_contents();
+        for _ in 0..9 {
+            items.push(Item::air());
+        }
+        items
+    }
+
     pub fn held_index(&self) -> usize { *self.held_index.read() }
 
     pub fn get_armor(&self, slot: usize) -> Item { self.armor.get_item(slot) }
     pub fn set_armor(&self, slot: usize, item: Item) { self.armor.set_item(slot, item) }
+    pub fn armor_contents(&self) -> Vec<Item> { self.armor.get_contents() }
+    pub fn set_armor_contents(&self, items: Vec<Item>) { self.armor.set_contents(items); }
+
+    pub fn offhand(&self) -> Item { self.offhand.get_item(0) }
+    pub fn set_offhand(&self, item: Item) { self.offhand.set_item(0, item); }
 
     pub fn helmet(&self) -> Item { self.armor.get_item(0) }
     pub fn chestplate(&self) -> Item { self.armor.get_item(1) }
@@ -50,6 +109,16 @@ impl PlayerInventory {
         let mut total = 0;
         for it in self.get_contents() {
             if it.id == id {
+                total += it.count;
+            }
+        }
+        total >= count
+    }
+
+    pub fn contains_item_meta(&self, id: i32, meta: i32, count: u32) -> bool {
+        let mut total = 0;
+        for it in self.get_contents() {
+            if it.id == id && (meta < 0 || it.meta == meta) {
                 total += it.count;
             }
         }
@@ -79,6 +148,29 @@ impl PlayerInventory {
         true
     }
 
+    pub fn remove_item_meta(&self, id: i32, meta: i32, mut count: u32) -> bool {
+        if !self.contains_item_meta(id, meta, count) {
+            return false;
+        }
+        for i in 0..36 {
+            let mut it = self.get_item(i);
+            if it.id == id && (meta < 0 || it.meta == meta) && it.count > 0 {
+                if it.count <= count {
+                    count -= it.count;
+                    self.set_item(i, Item::air());
+                } else {
+                    it.count -= count;
+                    count = 0;
+                    self.set_item(i, it);
+                }
+                if count == 0 {
+                    break;
+                }
+            }
+        }
+        true
+    }
+
     pub fn clear(&self) {
         for i in 0..36 {
             self.main.set_item(i, Item::air());
@@ -86,6 +178,8 @@ impl PlayerInventory {
         for i in 0..4 {
             self.armor.set_item(i, Item::air());
         }
+        self.offhand.set_item(0, Item::air());
+        *self.hotbar.write() = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     }
 }
 

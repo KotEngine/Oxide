@@ -2,6 +2,7 @@ use crate::utils::BinaryStream;
 use crate::protocol::packet::DataPacket;
 use crate::protocol::info::ProtocolInfo;
 
+#[derive(Debug, Clone)]
 pub struct SetPlayerGameTypePacket {
     pub gamemode: i32,
 }

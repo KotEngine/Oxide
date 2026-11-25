@@ -18,10 +18,12 @@ impl Command for WhitelistCommand {
         match args[0].to_lowercase().as_str() {
             "on" => {
                 server.whitelist_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+                server.save_whitelist();
                 sender.send_message("Whitelist is now turned on");
             }
             "off" => {
                 server.whitelist_enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+                server.save_whitelist();
                 sender.send_message("Whitelist is now turned off");
             }
             "list" => {
@@ -38,6 +40,7 @@ impl Command for WhitelistCommand {
                 }
                 let name = args[1].to_lowercase();
                 server.whitelist.write().insert(name);
+                server.save_whitelist();
                 sender.send_message(&format!("Added {} to the whitelist", args[1]));
             }
             "remove" => {
@@ -47,12 +50,14 @@ impl Command for WhitelistCommand {
                 }
                 let name = args[1].to_lowercase();
                 if server.whitelist.write().remove(&name) {
+                    server.save_whitelist();
                     sender.send_message(&format!("Removed {} from the whitelist", args[1]));
                 } else {
                     sender.send_message(&format!("Player '{}' is not whitelisted", args[1]));
                 }
             }
             "reload" => {
+                server.load_whitelist();
                 sender.send_message("Whitelist reloaded");
             }
             _ => {

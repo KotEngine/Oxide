@@ -51,7 +51,7 @@ pub fn decode_packets_from_payload(compressed: &[u8]) -> anyhow::Result<Vec<Vec<
 }
 
 fn compress(data: &[u8]) -> Vec<u8> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(7));
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(3));
     encoder.write_all(data).expect("zlib encode");
     encoder.finish().expect("zlib finish")
 }

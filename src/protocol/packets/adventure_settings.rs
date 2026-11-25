@@ -8,6 +8,7 @@ pub const PERMISSION_HOST: u32 = 2;
 pub const PERMISSION_AUTOMATION: u32 = 3;
 pub const PERMISSION_ADMIN: u32 = 4;
 
+#[derive(Debug, Clone)]
 pub struct AdventureSettingsPacket {
     pub flags: u32,
     pub user_permission: u32,

@@ -19,6 +19,14 @@ impl PermissionManager {
         self.permissions.read().get(name).cloned()
     }
 
+    pub fn remove(&self, name: &str) -> bool {
+        self.permissions.write().remove(name).is_some()
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.permissions.read().keys().cloned().collect()
+    }
+
     pub fn count(&self) -> usize {
         self.permissions.read().len()
     }

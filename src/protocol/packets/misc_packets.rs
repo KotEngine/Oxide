@@ -469,6 +469,7 @@ impl DataPacket for HurtArmorPacket {
     fn name(&self) -> &'static str { "HurtArmorPacket" }
 }
 
+#[derive(Debug, Clone)]
 pub struct EntityFallPacket {
     pub entity_runtime_id: i64,
     pub fall_distance: f32,

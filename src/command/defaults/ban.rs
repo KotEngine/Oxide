@@ -16,6 +16,7 @@ impl Command for BanCommand {
         let target = &args[0];
         let reason = if args.len() > 1 { args[1..].join(" ") } else { "Banned by admin".to_string() };
         server.bans.write().insert(target.to_lowercase(), reason.clone());
+        server.save_bans();
 
         if let Some((addr, actual_name)) = server.find_player_by_name(target) {
             server.kick_player(addr, &format!("Banned: {}", reason));
@@ -49,6 +50,7 @@ impl Command for BanIpCommand {
         };
 
         server.banned_ips.write().insert(ip_to_ban.clone(), reason.clone());
+        server.save_bans();
 
         // Kick any connected player with that IP
         let matching_addrs: Vec<std::net::SocketAddr> = {
@@ -78,6 +80,7 @@ impl Command for PardonCommand {
         }
         let target = args[0].to_lowercase();
         if server.bans.write().remove(&target).is_some() {
+            server.save_bans();
             sender.send_message(&format!("Unbanned player {}", args[0]));
         } else {
             sender.send_message(&format!("Player '{}' is not banned", args[0]));
@@ -100,6 +103,7 @@ impl Command for PardonIpCommand {
         }
         let ip = &args[0];
         if server.banned_ips.write().remove(ip).is_some() {
+            server.save_bans();
             sender.send_message(&format!("Unbanned IP address {}", ip));
         } else {
             sender.send_message(&format!("IP '{}' is not banned", ip));

@@ -626,3 +626,298 @@ fn test_effect_container_and_mechanics() {
     assert_eq!(container.get_effect(effect_id::SPEED).unwrap().duration, 199);
 }
 
+#[test]
+fn test_hotbar_mapping_and_inventory_wire() {
+    use oxide::inventory::inventories::PlayerInventory;
+    use oxide::protocol::types::Item;
+
+    let inv = PlayerInventory::new();
+    inv.set_item(12, Item::new(276, 0, 1));
+    inv.set_held_index_with_mapping(2, 12 + 9);
+    assert_eq!(inv.held_slot(), 12);
+    assert_eq!(inv.held_item().id, 276);
+
+    let links = inv.wire_hotbar_links();
+    assert_eq!(links[2], 12 + 9);
+
+    inv.set_armor(0, Item::new(310, 0, 1));
+    inv.set_offhand(Item::new(450, 0, 1));
+    assert_eq!(inv.helmet().id, 310);
+    assert_eq!(inv.offhand().id, 450);
+}
+
+#[test]
+fn test_block_placement_drops_and_lighting() {
+    use oxide::block::physics::{get_block_drops_ext, resolve_placement, PlacementResult};
+    use oxide::item::enchantment::{apply_enchantment_to_item, TYPE_MINING_SILK_TOUCH};
+    use oxide::level::{World, light};
+    use oxide::protocol::types::Item;
+
+    let mut world = World::new();
+    // Place slab at (5,4,5) then merge into double slab (43)
+    let first = resolve_placement(&mut world, 5, 3, 5, 1, 0.2, 0.0, 44, 2);
+    if let PlacementResult::Single { x, y, z, id, meta } = first {
+        world.set_block(x, y, z, id, meta);
+        assert_eq!(id, 44);
+    } else {
+        panic!("expected single slab placement");
+    }
+    let merge = resolve_placement(&mut world, 5, 4, 5, 1, 0.2, 0.0, 44, 2);
+    if let PlacementResult::Single { id, .. } = merge {
+        assert_eq!(id, 43);
+    } else {
+        panic!("expected slab merge into 43");
+    }
+
+    // Silk Touch drops Diamond Ore (56) instead of Diamond (264)
+    let mut silk_pick = Item::new(278, 0, 1);
+    apply_enchantment_to_item(&mut silk_pick, TYPE_MINING_SILK_TOUCH, 1);
+    let silk_drops = get_block_drops_ext(56, 0, &silk_pick);
+    assert_eq!(silk_drops[0].id, 56);
+
+    let plain_pick = Item::new(257, 0, 1);
+    let plain_drops = get_block_drops_ext(56, 0, &plain_pick);
+    assert_eq!(plain_drops[0].id, 264);
+
+    // Block lighting BFS from Torch (50)
+    world.set_block(10, 5, 10, 50, 5);
+    light::update_light_around(&mut world, 10, 5, 10);
+    assert!(world.get_full_light_opt(10, 5, 10) >= 14);
+    assert!(world.get_full_light_opt(12, 5, 10) >= 12);
+}
+
+#[test]
+fn test_explosion_raycast_and_tnt() {
+    use oxide::level::{World, explosion};
+
+    let mut world = World::new();
+    world.set_block(10, 4, 10, 1, 0);   // Stone (destructible)
+    world.set_block(11, 4, 10, 46, 0);  // TNT (chains)
+    world.set_block(9, 4, 10, 49, 0);   // Obsidian (blast resistant)
+
+    let res = explosion::compute_explosion(&mut world, 10.5, 4.5, 10.5, 4.0);
+    assert_eq!(world.get_block_id(10, 4, 10), 0);
+    assert_eq!(world.get_block_id(9, 4, 10), 49);
+    assert!(res.ignited_tnts.iter().any(|&(tx, ty, tz, _)| {
+        (tx.floor() as i32, ty.floor() as i32, tz.floor() as i32) == (11, 4, 10)
+    }));
+}
+
+#[test]
+fn test_armor_damage_reduction_and_totem() {
+    use oxide::entity::damage::{apply_player_damage, DamageCause};
+    use oxide::protocol::handler::PlayerState;
+    use oxide::protocol::types::Item;
+
+    let mut naked = PlayerState::new();
+    naked.gamemode = 0;
+    naked.spawned = true;
+    let d_naked = apply_player_damage(&mut naked, 10.0, DamageCause::EntityAttack, false);
+    assert!((d_naked.final_damage - 10.0).abs() < 0.01);
+    assert_eq!(naked.health, 10);
+
+    let mut armored = PlayerState::new();
+    armored.gamemode = 0;
+    armored.spawned = true;
+    armored.inventory.set_armor(0, Item::new(310, 0, 1)); // Diamond helmet (3)
+    armored.inventory.set_armor(1, Item::new(311, 0, 1)); // Diamond chest (8)
+    armored.inventory.set_armor(2, Item::new(312, 0, 1)); // Diamond legs (6)
+    armored.inventory.set_armor(3, Item::new(313, 0, 1)); // Diamond boots (3) => 20 pts = 80% reduction
+    let d_armored = apply_player_damage(&mut armored, 10.0, DamageCause::EntityAttack, false);
+    assert!((d_armored.final_damage - 2.0).abs() < 0.01);
+    assert_eq!(armored.health, 18);
+
+    // Totem of Undying resurrection from fatal hit
+    armored.inventory.set_offhand(Item::new(450, 0, 1));
+    let lethal = apply_player_damage(&mut armored, 100.0, DamageCause::EntityAttack, false);
+    assert!(lethal.totem_used);
+    assert!(!lethal.died);
+    assert_eq!(armored.health, 1);
+    assert!(armored.inventory.offhand().is_air());
+}
+
+#[test]
+fn test_potion_metadata_and_brewing_recipes() {
+    use oxide::entity::effect::{get_potion_effects, effect_id};
+    use oxide::inventory::crafting::CraftingManager;
+    use oxide::protocol::types::Item;
+
+    assert_eq!(get_potion_effects(5)[0].id, effect_id::NIGHT_VISION);
+    assert_eq!(get_potion_effects(21)[0].id, effect_id::INSTANT_HEALTH);
+    assert_eq!(get_potion_effects(28)[0].id, effect_id::REGENERATION);
+    assert_eq!(get_potion_effects(31)[0].id, effect_id::STRENGTH);
+
+    let cm = CraftingManager::default();
+    let awkward = cm.match_brewing(&Item::new(372, 0, 1), &Item::new(373, 0, 1));
+    assert_eq!(awkward.map(|i| (i.id, i.meta)), Some((373, 4)));
+
+    let str_pot = cm.match_brewing(&Item::new(377, 0, 1), &Item::new(373, 4, 1));
+    assert_eq!(str_pot.map(|i| (i.id, i.meta)), Some((373, 31)));
+
+    let splash = cm.match_brewing(&Item::new(289, 0, 1), &Item::new(373, 31, 1));
+    assert_eq!(splash.map(|i| (i.id, i.meta)), Some((438, 31)));
+}
+
+#[test]
+fn test_double_chest_furnace_brewing_anvil() {
+    use oxide::tile::TileManager;
+    use oxide::inventory::crafting::CraftingManager;
+    use oxide::item::enchantment::anvil_combine_items;
+    use oxide::protocol::types::Item;
+    use std::net::SocketAddr;
+
+    let tm = TileManager::new();
+    let addr: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+
+    // Double chest 54 slots
+    tm.ensure_chest_in_dim(0, 10, 4, 10, false);
+    tm.ensure_chest_in_dim(0, 11, 4, 10, false);
+    assert_eq!(tm.try_pair_chest_in_dim(0, 11, 4, 10, false), Some((10, 4, 10)));
+    let (slots, _) = tm.open_chest_in_dim(addr, 0, 10, 4, 10);
+    assert_eq!(slots.len(), 54);
+
+    // Furnace lava bucket leaves empty bucket residue
+    let cm = CraftingManager::default();
+    tm.ensure_furnace_in_dim(0, 20, 4, 20);
+    tm.open_furnace_in_dim(addr, 0, 20, 4, 20);
+    tm.set_furnace_slot_in_dim(0, 20, 4, 20, 0, Item::new(15, 0, 1)); // Iron Ore
+    tm.set_furnace_slot_in_dim(0, 20, 4, 20, 1, Item::new(325, 10, 1)); // Lava Bucket
+    let fur_up = tm.tick_furnaces_live(&cm);
+    assert_eq!(fur_up.block_toggles, vec![(0, 20, 4, 20, true)]);
+    let items = tm.open_furnace_in_dim(addr, 0, 20, 4, 20);
+    assert_eq!((items[1].id, items[1].meta), (325, 0));
+
+    // Anvil repair + rename
+    let damaged_sword = Item::new(276, 500, 1);
+    let (repaired, cost) = anvil_combine_items(&damaged_sword, &Item::new(264, 0, 1), Some("Excalibur")).unwrap();
+    assert!(repaired.meta < 500);
+    assert!(cost >= 1);
+}
+
+#[test]
+fn test_entity_aabb_collision_and_xp_orbs() {
+    use oxide::entity::physics::{move_entity_with_collision, block_collision_box};
+    use oxide::entity::manager::split_xp_orb_sizes;
+    use oxide::level::World;
+
+    let mut world = World::new();
+    // Solid floor at y=3, wall at x=5, y=4..6
+    world.set_block(3, 3, 3, 1, 0);
+    world.set_block(4, 3, 3, 1, 0);
+    world.set_block(5, 4, 3, 1, 0);
+    world.set_block(5, 5, 3, 1, 0);
+
+    let res = move_entity_with_collision(&world, 4.4, 4.0, 3.5, 0.5, 0.0, 0.0, 0.3, 1.8, 0.5, true);
+    assert!(res.collided_horizontally);
+    assert!(res.x <= 4.7001);
+
+    // Fence has 1.5 block height collision
+    let fence_bb = block_collision_box(85, 0, 10, 4, 10).unwrap();
+    assert_eq!(fence_bb.max_y, 5.5);
+
+    // XP splitting
+    let orbs = split_xp_orb_sizes(25);
+    assert_eq!(orbs.iter().sum::<u32>(), 25);
+    assert_eq!(orbs, vec![17, 7, 1]);
+}
+
+#[test]
+fn test_world_chunk_tile_and_player_persistence() {
+    use oxide::level::{World, storage};
+    use oxide::tile::TileManager;
+    use oxide::protocol::handler::PlayerState;
+    use oxide::protocol::types::Item;
+    use std::net::SocketAddr;
+
+    let tmp_root = std::env::temp_dir().join("oxide_persist_test");
+    let _ = std::fs::remove_dir_all(&tmp_root);
+    let wdir = tmp_root.join("worlds").join("world");
+
+    {
+        let mut world = World::with_generator_and_dir("flat", 42, Some(wdir.clone()), "world");
+        world.time = 1234;
+        world.set_block(7, 10, 7, 57, 0); // Diamond block
+        let saved = world.save_all();
+        assert_eq!(saved, 1);
+    }
+
+    {
+        let mut world2 = World::with_generator_and_dir("flat", 99, Some(wdir.clone()), "world");
+        assert_eq!(world2.time, 1234);
+        assert_eq!(world2.seed, 42);
+        assert_eq!(world2.get_block_id(7, 10, 7), 57);
+    }
+
+    // Tile persistence
+    let tm1 = TileManager::new();
+    let addr: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+    tm1.ensure_chest_in_dim(1, 2, 64, 2, false);
+    tm1.open_chest_in_dim(addr, 1, 2, 64, 2);
+    tm1.set_chest_slot_in_dim(1, 2, 64, 2, 0, Item::new(264, 0, 32));
+    tm1.set_sign_text_in_dim(0, 3, 4, 3, ["Line 1".into(), "Line 2".into(), "".into(), "".into()], "Alex".into());
+    let tile_bytes = tm1.export_tiles_bytes();
+
+    let tm2 = TileManager::new();
+    assert!(tm2.import_tiles_bytes(&tile_bytes));
+    let items2 = tm2.open_chest_in_dim(addr, 1, 2, 64, 2).0;
+    assert_eq!((items2[0].id, items2[0].count), (264, 32));
+    assert_eq!(tm2.get_sign_text(3, 4, 3).unwrap()[0], "Line 1");
+
+    // Player .dat persistence
+    let mut ps = PlayerState::new();
+    ps.username = "TesterOne".into();
+    ps.x = 12.5;
+    ps.y = 70.0;
+    ps.z = -4.5;
+    ps.dimension = 1;
+    ps.xp_level = 9;
+    ps.inventory.set_item(3, Item::new(276, 0, 1));
+    ps.inventory.set_armor(1, Item::new(311, 0, 1));
+    storage::save_player_dat(&tmp_root, &ps).unwrap();
+
+    let loaded = storage::load_player_dat(&tmp_root, "testerone").unwrap();
+    assert_eq!(loaded.dimension, 1);
+    assert_eq!(loaded.xp_level, 9);
+    assert_eq!(loaded.inventory[3].id, 276);
+    assert_eq!(loaded.armor[1].id, 311);
+
+    let _ = std::fs::remove_dir_all(&tmp_root);
+}
+
+#[test]
+fn test_redstone_wire_torch_lamp_door_and_tnt() {
+    use oxide::level::{World, redstone};
+
+    let mut world = World::new();
+    // Floor stone y=3
+    for x in 0..=8 {
+        world.set_block(x, 3, 5, 1, 0);
+    }
+    // Activated Lever (69, meta 5|8 = 13) at (1,4,5) -> Wires (55) at (2..=4,4,5) -> Lamp (123) at (5,4,5) & Iron Door (71) at (3,4..=5,6)
+    world.set_block(1, 4, 5, 69, 5 | 0x08);
+    world.set_block(2, 4, 5, 55, 0);
+    world.set_block(3, 4, 5, 55, 0);
+    world.set_block(4, 4, 5, 55, 0);
+    world.set_block(5, 4, 5, 123, 0);
+    world.set_block(3, 4, 6, 71, 0);
+    world.set_block(3, 5, 6, 71, 8);
+
+    // Torch inverter test: stone at (2,4,2), active torch (76) on side (3,4,2), power stone with redstone block (152) at (1,4,2)
+    world.set_block(1, 4, 2, 152, 0);
+    world.set_block(2, 4, 2, 1, 0);
+    world.set_block(3, 4, 2, 76, 1);
+
+    // TNT next to wire at (4,4,6)
+    world.set_block(4, 4, 6, 46, 0);
+
+    let res = redstone::update_redstone_around(&mut world, &[(1, 4, 5), (1, 4, 2)]);
+    assert_eq!(world.get_block_data_opt(2, 4, 5), 15);
+    assert_eq!(world.get_block_data_opt(3, 4, 5), 14);
+    assert_eq!(world.get_block_data_opt(4, 4, 5), 13);
+    assert_eq!(world.get_block_id(5, 4, 5), 124); // Lamp lit
+    assert_ne!(world.get_block_data_opt(3, 4, 6) & 0x04, 0); // Iron Door opened
+    assert_eq!(world.get_block_id(3, 4, 2), 75); // Inverted torch turned off
+    assert!(res.ignited_tnts.iter().any(|&(tx, ty, tz, _)| (tx, ty, tz) == (4, 4, 6)));
+}
+
+

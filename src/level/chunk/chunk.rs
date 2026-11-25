@@ -70,6 +70,22 @@ impl Chunk {
         self.sub_chunks[sy].set_sky_light(x, y & 0x0f, z, level);
     }
 
+    pub fn get_block_light(&self, x: usize, y: usize, z: usize) -> u8 {
+        let sy = y >> 4;
+        if sy >= MAX_SUBCHUNKS { return 0; }
+        self.sub_chunks[sy].get_block_light(x, y & 0x0f, z)
+    }
+
+    pub fn set_block_light(&mut self, x: usize, y: usize, z: usize, level: u8) {
+        let sy = y >> 4;
+        if sy >= MAX_SUBCHUNKS { return; }
+        self.sub_chunks[sy].set_block_light(x, y & 0x0f, z, level);
+    }
+
+    pub fn get_full_light(&self, x: usize, y: usize, z: usize) -> u8 {
+        self.get_sky_light(x, y, z).max(self.get_block_light(x, y, z))
+    }
+
     pub fn recalculate_height_map(&mut self) {
         for z in 0..16 {
             for x in 0..16 {
@@ -111,6 +127,10 @@ impl Chunk {
     }
 
     pub fn network_serialize(&self) -> Vec<u8> {
+        self.network_serialize_with_tiles(&[])
+    }
+
+    pub fn network_serialize_with_tiles(&self, tile_nbts: &[Vec<u8>]) -> Vec<u8> {
         let mut out = Vec::new();
         let count = self.sub_chunk_send_count();
         out.push(count as u8);
@@ -124,6 +144,9 @@ impl Chunk {
         out.extend_from_slice(&self.biome_ids);
         out.push(0); // Border blocks count
         out.push(0); // Extra data count (varint)
+        for nbt in tile_nbts {
+            out.extend_from_slice(nbt);
+        }
         out
     }
 

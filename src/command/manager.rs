@@ -101,6 +101,7 @@ impl CommandManager {
         self.register(Arc::new(ReloadCommand));
         self.register(Arc::new(SummonCommand));
         self.register(Arc::new(DimensionCommand));
+        self.register(Arc::new(SaveAllCommand));
     }
 
     pub fn generate_available_commands_packet(&self) -> crate::protocol::packets::AvailableCommandsPacket {

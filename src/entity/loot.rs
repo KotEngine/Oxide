@@ -116,8 +116,53 @@ impl LootTable {
                 }
             }
 
-            // Spider (35) & Cave Spider (39)
-            35 | 39 => {
+            // Mooshroom (16)
+            16 => {
+                let leather = rng.gen_range(0..=2) + looting_bonus(looting_level, &mut rng);
+                if leather > 0 {
+                    drops.push(Item::new(334, 0, leather));
+                }
+                let beef_count = rng.gen_range(1..=3) + looting_bonus(looting_level, &mut rng);
+                let beef_id = if on_fire { 364 } else { 363 };
+                drops.push(Item::new(beef_id, 0, beef_count));
+            }
+
+            // Squid (17)
+            17 => {
+                let ink = rng.gen_range(1..=3) + looting_bonus(looting_level, &mut rng);
+                drops.push(Item::new(351, 0, ink));
+            }
+
+            // Rabbit (18)
+            18 => {
+                let hide = rng.gen_range(0..=1) + looting_bonus(looting_level, &mut rng);
+                if hide > 0 {
+                    drops.push(Item::new(415, 0, hide));
+                }
+                let meat_id = if on_fire { 412 } else { 411 };
+                drops.push(Item::new(meat_id, 0, 1));
+            }
+
+            // Iron Golem (20)
+            20 => {
+                let iron = rng.gen_range(3..=5);
+                drops.push(Item::new(265, 0, iron));
+                let poppy = rng.gen_range(0..=2);
+                if poppy > 0 {
+                    drops.push(Item::new(38, 0, poppy));
+                }
+            }
+
+            // Snow Golem (21)
+            21 => {
+                let balls = rng.gen_range(0..=15);
+                if balls > 0 {
+                    drops.push(Item::new(332, 0, balls));
+                }
+            }
+
+            // Spider (35) & Cave Spider (40)
+            35 | 40 => {
                 // String: 0-2 + looting
                 let string = rng.gen_range(0..=2) + looting_bonus(looting_level, &mut rng);
                 if string > 0 {
@@ -167,13 +212,15 @@ impl LootTable {
                 }
             }
 
-            // Blaze (41)
+            // Ghast (41)
             41 => {
-                if killed_by_player {
-                    let rods = rng.gen_range(0..=1) + looting_bonus(looting_level, &mut rng);
-                    if rods > 0 {
-                        drops.push(Item::new(369, 0, rods));
-                    }
+                let gunpowder = rng.gen_range(0..=2) + looting_bonus(looting_level, &mut rng);
+                if gunpowder > 0 {
+                    drops.push(Item::new(289, 0, gunpowder));
+                }
+                let tears = rng.gen_range(0..=1) + looting_bonus(looting_level, &mut rng);
+                if tears > 0 {
+                    drops.push(Item::new(370, 0, tears));
                 }
             }
 
@@ -182,6 +229,16 @@ impl LootTable {
                 let cream = rng.gen_range(0..=1) + looting_bonus(looting_level, &mut rng);
                 if cream > 0 {
                     drops.push(Item::new(378, 0, cream));
+                }
+            }
+
+            // Blaze (43)
+            43 => {
+                if killed_by_player {
+                    let rods = rng.gen_range(0..=1) + looting_bonus(looting_level, &mut rng);
+                    if rods > 0 {
+                        drops.push(Item::new(369, 0, rods));
+                    }
                 }
             }
 
@@ -255,6 +312,20 @@ impl LootTable {
         }
 
         drops
+    }
+
+    /// Experience points awarded when killing an entity.
+    pub fn xp_reward(entity_type: i32, size: u8) -> u32 {
+        match entity_type {
+            10 | 11 | 12 | 13 | 14 | 16 | 17 | 18 | 22 => 2,
+            32 | 33 | 34 | 35 | 36 | 38 | 39 | 40 | 41 | 44 | 45 | 46 | 47 | 48 | 49 | 54 => 5,
+            43 => 10,          // Blaze
+            37 | 42 => (size as u32).max(1), // Slime / Magma Cube
+            50 | 57 | 58 => 10, // Elder Guardian / Vindicator / Evoker
+            52 => 50,          // Wither
+            53 => 500,         // Ender Dragon
+            _ => 0,
+        }
     }
 }
 

@@ -145,6 +145,7 @@ impl DataPacket for SetEntityLinkPacket {
     fn name(&self) -> &'static str { "SetEntityLinkPacket" }
 }
 
+#[derive(Debug, Clone)]
 pub struct EntityEventPacket {
     pub entity_runtime_id: i64,
     pub event: u8,

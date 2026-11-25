@@ -14,12 +14,15 @@ impl Command for OpCommand {
             sender.send_message("Usage: /op <player>");
             return;
         }
-        if let Some((addr, actual_name)) = server.find_player_by_name(&args[0]) {
+        let target_name = if let Some((addr, actual_name)) = server.find_player_by_name(&args[0]) {
+            server.add_op(&actual_name);
             server.send_message_to(addr, "You are now an operator!");
-            sender.send_message(&format!("Opped {}", actual_name));
+            actual_name
         } else {
-            sender.send_message(&format!("Player '{}' not found", args[0]));
-        }
+            server.add_op(&args[0]);
+            args[0].clone()
+        };
+        sender.send_message(&format!("Opped {}", target_name));
     }
 }
 
@@ -37,10 +40,13 @@ impl Command for DeopCommand {
             return;
         }
         if let Some((addr, actual_name)) = server.find_player_by_name(&args[0]) {
+            server.remove_op(&actual_name);
             server.send_message_to(addr, "You are no longer an operator!");
             sender.send_message(&format!("De-opped {}", actual_name));
+        } else if server.remove_op(&args[0]) {
+            sender.send_message(&format!("De-opped {}", args[0]));
         } else {
-            sender.send_message(&format!("Player '{}' not found", args[0]));
+            sender.send_message(&format!("Player '{}' is not an operator", args[0]));
         }
     }
 }
